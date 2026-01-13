@@ -14,6 +14,13 @@ from datetime import datetime
 
 from detectors.metadata_detector import MetadataDetector
 from detectors.pixel_detector import PixelDetector
+from detectors.pdf_structure_detector import PDFStructureDetector
+from detectors.font_detector import FontDetector
+from detectors.text_layer_detector import TextLayerDetector
+from detectors.layout_detector import LayoutDetector
+from detectors.signature_detector import SignatureDetector
+from detectors.embedded_object_detector import EmbeddedObjectDetector
+from detectors.confidence_scorer import ConfidenceScorer
 
 # Page configuration
 st.set_page_config(
@@ -63,9 +70,21 @@ def analyze_file(uploaded_file):
     # Store file for display
     file_stream = BytesIO(file_bytes)
     
-    # Initialize detectors
+    # Initialize all detectors
     metadata_detector = MetadataDetector()
     pixel_detector = PixelDetector()
+    
+    # For PDFs, initialize PDF-specific detectors
+    pdf_doc = None
+    if file_type == 'pdf':
+        pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
+        structure_detector = PDFStructureDetector()
+        font_detector = FontDetector()
+        text_layer_detector = TextLayerDetector()
+        layout_detector = LayoutDetector()
+        signature_detector = SignatureDetector()
+        embedded_detector = EmbeddedObjectDetector()
+        confidence_scorer = ConfidenceScorer()
     
     # Run metadata analysis (pass filename for additional analysis)
     metadata_result = metadata_detector.analyze(BytesIO(file_bytes), file_type, uploaded_file.name)
@@ -81,14 +100,66 @@ def analyze_file(uploaded_file):
     ela_heatmap = pixel_detector.analyze_ela(display_image)
     noise_result = pixel_detector.analyze_noise(display_image)
     
-    # Adjust trust score based on pixel analysis findings
-    # If pixel analysis detects manipulation, lower trust score
-    if noise_result['flags']:  # If any flags from noise analysis (e.g., smoothing detected)
-        # Lower trust score if pixel manipulation is detected
-        if metadata_result['trust_score'] > 50:
-            metadata_result['trust_score'] = 20  # Lower trust due to pixel-level manipulation
-        else:
-            metadata_result['trust_score'] = min(metadata_result['trust_score'], 20)
+    # Run PDF-specific detectors
+    all_results = {
+        'metadata': metadata_result,
+        'pixel': noise_result
+    }
+    
+    if file_type == 'pdf' and pdf_doc:
+        # Run all PDF-specific detectors
+        structure_result = structure_detector.analyze(pdf_doc)
+        font_result = font_detector.analyze(pdf_doc)
+        text_layer_result = text_layer_detector.analyze(pdf_doc)
+        layout_result = layout_detector.analyze(pdf_doc)
+        signature_result = signature_detector.analyze(pdf_doc)
+        embedded_result = embedded_detector.analyze(pdf_doc)
+        
+        all_results.update({
+            'structure': structure_result,
+            'font': font_result,
+            'text_layer': text_layer_result,
+            'layout': layout_result,
+            'signature': signature_result,
+            'embedded': embedded_result
+        })
+        
+        # Calculate confidence score
+        confidence_result = confidence_scorer.calculate_confidence(all_results)
+        
+        # Adjust trust score based on confidence level to ensure consistency
+        if confidence_result:
+            confidence_score = confidence_result['confidence_score']
+            confidence_level = confidence_result['confidence_level']
+            
+            # Override trust score based on confidence level
+            if confidence_level == 'Definitive Fraud' and confidence_score >= 90:
+                # High confidence in fraud = very low trust
+                metadata_result['trust_score'] = 15
+            elif confidence_level == 'High Suspicion' and confidence_score >= 70:
+                # High suspicion = low trust
+                metadata_result['trust_score'] = 25
+            elif confidence_level == 'Moderate Suspicion' and confidence_score >= 50:
+                # Moderate suspicion = moderate-low trust
+                metadata_result['trust_score'] = 40
+            elif confidence_level == 'Low Suspicion' and confidence_score < 30:
+                # Low suspicion with low confidence = trust the metadata score
+                # Don't override - keep metadata trust score
+                pass
+            # For Low Suspicion with higher scores (30-49), slightly reduce trust
+            elif confidence_level == 'Low Suspicion' and confidence_score >= 30:
+                # Minor anomalies but still legitimate
+                if metadata_result['trust_score'] > 70:
+                    metadata_result['trust_score'] = max(60, metadata_result['trust_score'] - 10)
+        
+        # Adjust trust score based on pixel analysis findings
+        if noise_result['flags']:
+            if metadata_result['trust_score'] > 50:
+                metadata_result['trust_score'] = 20
+            else:
+                metadata_result['trust_score'] = min(metadata_result['trust_score'], 20)
+    else:
+        confidence_result = None
     
     # Combine results
     analysis = {
@@ -98,8 +169,14 @@ def analyze_file(uploaded_file):
         'metadata': metadata_result,
         'noise': noise_result,
         'display_image': display_image,
-        'ela_heatmap': ela_heatmap
+        'ela_heatmap': ela_heatmap,
+        'confidence': confidence_result,
+        'all_results': all_results if file_type == 'pdf' else {}
     }
+    
+    # Close PDF document if opened
+    if pdf_doc:
+        pdf_doc.close()
     
     return analysis
 
@@ -153,9 +230,16 @@ with st.sidebar:
         # Analyze file
         with st.status("Scanning document layers...", expanded=True) as status:
             st.write("Extracting metadata...")
-            analysis = analyze_file(uploaded_file)
+            if uploaded_file.name.lower().endswith('.pdf'):
+                st.write("Analyzing PDF structure...")
+                st.write("Checking fonts and text layers...")
+                st.write("Analyzing layout consistency...")
+                st.write("Verifying digital signatures...")
+                st.write("Checking embedded objects...")
             st.write("Performing pixel-level analysis...")
+            st.write("Calculating confidence scores...")
             st.write("Generating forensic report...")
+            analysis = analyze_file(uploaded_file)
             status.update(label="Analysis complete!", state="complete")
             
             st.session_state.current_file = uploaded_file.name
@@ -279,6 +363,42 @@ else:
     with col2:
         st.subheader('⚖️ Forensic Verdict')
         
+        # Confidence Score (if available for PDFs)
+        if analysis.get('confidence') and analysis['file_type'] == 'pdf':
+            confidence_data = analysis['confidence']
+            confidence_score = confidence_data['confidence_score']
+            confidence_level = confidence_data['confidence_level']
+            
+            # Display confidence with color coding
+            if confidence_score >= 90:
+                conf_color = "🔴"
+                conf_bg = "background-color: #ffebee; padding: 10px; border-radius: 5px;"
+            elif confidence_score >= 70:
+                conf_color = "🟠"
+                conf_bg = "background-color: #fff3e0; padding: 10px; border-radius: 5px;"
+            elif confidence_score >= 50:
+                conf_color = "🟡"
+                conf_bg = "background-color: #fffde7; padding: 10px; border-radius: 5px;"
+            else:
+                conf_color = "🟢"
+                conf_bg = "background-color: #e8f5e9; padding: 10px; border-radius: 5px;"
+            
+            st.markdown(f"### 🎯 Confidence Score: {confidence_score:.0f}%")
+            st.markdown(f"**{conf_color} {confidence_level}**")
+            st.info(confidence_data['recommendation'])
+            
+            # Confidence breakdown
+            with st.expander("📊 Confidence Breakdown", expanded=False):
+                breakdown = confidence_data['indicator_breakdown']
+                st.markdown(f"**Total Indicators:** {confidence_data['indicator_count']}")
+                st.markdown(f"**Unique Categories:** {confidence_data['unique_categories']}")
+                st.markdown("**By Category:**")
+                st.markdown(f"- Metadata: {breakdown['metadata_indicators']}")
+                st.markdown(f"- Structure: {breakdown['structure_indicators']}")
+                st.markdown(f"- Content: {breakdown['content_indicators']}")
+                st.markdown(f"- Pixel: {breakdown['pixel_indicators']}")
+                st.markdown(f"- Signature: {breakdown['signature_indicators']}")
+        
         # Overall Forgery Probability
         forgery_score = analysis['metadata']['risk_score']
         trust_score = analysis['metadata']['trust_score']
@@ -300,6 +420,22 @@ else:
         all_flags = []
         all_flags.extend(analysis['metadata']['flags'])
         all_flags.extend(analysis['noise']['flags'])
+        
+        # Add flags from PDF-specific detectors if available
+        if analysis['file_type'] == 'pdf' and analysis.get('all_results'):
+            all_results = analysis['all_results']
+            if 'structure' in all_results:
+                all_flags.extend(all_results['structure'].get('flags', []))
+            if 'font' in all_results:
+                all_flags.extend(all_results['font'].get('flags', []))
+            if 'text_layer' in all_results:
+                all_flags.extend(all_results['text_layer'].get('flags', []))
+            if 'layout' in all_results:
+                all_flags.extend(all_results['layout'].get('flags', []))
+            if 'signature' in all_results:
+                all_flags.extend(all_results['signature'].get('flags', []))
+            if 'embedded' in all_results:
+                all_flags.extend(all_results['embedded'].get('flags', []))
         
         if all_flags:
             for flag in all_flags:
@@ -446,8 +582,66 @@ else:
         st.divider()
         st.markdown("### 📊 Forensic Analysis Details")
         
-        with st.expander("Noise Variance Analysis"):
+        # Show detailed findings from all detectors
+        if analysis['file_type'] == 'pdf' and analysis.get('all_results'):
+            all_results = analysis['all_results']
+            
+            with st.expander("🔍 PDF Structure Analysis", expanded=False):
+                if 'structure' in all_results:
+                    structure = all_results['structure']
+                    if structure.get('findings'):
+                        st.json(structure['findings'])
+                    st.caption(f"Risk Score: {structure.get('risk_score', 0)}/100")
+                else:
+                    st.info("Structure analysis not available")
+            
+            with st.expander("🔤 Font Analysis", expanded=False):
+                if 'font' in all_results:
+                    font = all_results['font']
+                    if font.get('findings'):
+                        st.json(font['findings'])
+                    st.caption(f"Risk Score: {font.get('risk_score', 0)}/100")
+                else:
+                    st.info("Font analysis not available")
+            
+            with st.expander("📝 Text Layer Analysis", expanded=False):
+                if 'text_layer' in all_results:
+                    text_layer = all_results['text_layer']
+                    if text_layer.get('findings'):
+                        st.json(text_layer['findings'])
+                    st.caption(f"Risk Score: {text_layer.get('risk_score', 0)}/100")
+                else:
+                    st.info("Text layer analysis not available")
+            
+            with st.expander("📐 Layout Analysis", expanded=False):
+                if 'layout' in all_results:
+                    layout = all_results['layout']
+                    if layout.get('findings'):
+                        st.json(layout['findings'])
+                    st.caption(f"Risk Score: {layout.get('risk_score', 0)}/100")
+                else:
+                    st.info("Layout analysis not available")
+            
+            with st.expander("✍️ Signature Analysis", expanded=False):
+                if 'signature' in all_results:
+                    signature = all_results['signature']
+                    if signature.get('findings'):
+                        st.json(signature['findings'])
+                    st.caption(f"Risk Score: {signature.get('risk_score', 0)}/100")
+                else:
+                    st.info("Signature analysis not available")
+            
+            with st.expander("🖼️ Embedded Object Analysis", expanded=False):
+                if 'embedded' in all_results:
+                    embedded = all_results['embedded']
+                    if embedded.get('findings'):
+                        st.json(embedded['findings'])
+                    st.caption(f"Risk Score: {embedded.get('risk_score', 0)}/100")
+                else:
+                    st.info("Embedded object analysis not available")
+        
+        with st.expander("🔊 Noise Variance Analysis"):
             st.write(analysis['noise']['findings'])
         
-        with st.expander("Complete Metadata Extraction"):
+        with st.expander("📋 Complete Metadata Extraction"):
             st.json(analysis['metadata']['raw_data'])
