@@ -67,8 +67,8 @@ def analyze_file(uploaded_file):
     metadata_detector = MetadataDetector()
     pixel_detector = PixelDetector()
     
-    # Run metadata analysis
-    metadata_result = metadata_detector.analyze(BytesIO(file_bytes), file_type)
+    # Run metadata analysis (pass filename for additional analysis)
+    metadata_result = metadata_detector.analyze(BytesIO(file_bytes), file_type, uploaded_file.name)
     
     # Prepare image for pixel analysis
     if file_type == 'pdf':
@@ -303,12 +303,42 @@ else:
         
         if all_flags:
             for flag in all_flags:
-                if 'Digital Manipulation' in flag or 'Inconsistency' in flag:
+                if 'Missing Metadata' in flag and 'Institutional Content' in flag:
+                    st.warning(f"⚠️ **{flag}**")
+                elif 'Missing Author/Creator Metadata' in flag and 'High Suspicion' in flag:
+                    st.error(f"🔴 **{flag}**")
+                elif 'Missing Metadata' in flag:
+                    st.warning(f"⚠️ **{flag}**")
+                elif 'Digital Manipulation' in flag or 'Inconsistency' in flag:
                     st.markdown(f"🚩 **{flag}**")
                 elif 'Potential' in flag or 'Smoothing' in flag:
                     st.markdown(f"⚠️ **{flag}**")
+                elif 'Institutional Indicators' in flag:
+                    st.info(f"ℹ️ **{flag}**")
                 else:
                     st.markdown(f"ℹ️ **{flag}**")
+            
+            # Show assessment if available
+            metadata = analysis['metadata']['raw_data']
+            assessment = metadata.get('assessment')
+            if assessment:
+                # Determine risk level based on assessment content
+                if 'Likely legitimate' in assessment or 're-saved' in assessment.lower():
+                    st.info(f"📋 **Assessment**: {assessment}")
+                elif 'Requires Verification' in assessment or 'verify' in assessment.lower():
+                    st.warning(f"📋 **Assessment**: {assessment}")
+                else:
+                    st.error(f"📋 **Assessment**: {assessment}")
+            
+            # Show Producer as alternative if metadata is missing
+            completeness = metadata.get('metadata_completeness', {})
+            if not completeness.get('is_complete', True) and completeness.get('has_producer'):
+                producer_note = metadata.get('producer_note', '')
+                if producer_note:
+                    st.info(f"💡 **{producer_note}**")
+                else:
+                    producer_val = metadata.get('producer') or 'Unknown'
+                    st.info(f"💡 **Alternative Indicator Available**: Producer field shows '{producer_val}'")
         else:
             st.success("✅ No suspicious forensic signals detected")
         
@@ -323,16 +353,33 @@ else:
         # Extract key metadata
         if analysis['file_type'] == 'pdf':
             pdf_meta = metadata.get('pdf_metadata', {})
-            dna_data.append(['Author', pdf_meta.get('author', 'N/A')])
-            dna_data.append(['Creator', pdf_meta.get('creator', 'N/A')])
-            dna_data.append(['Producer', pdf_meta.get('producer', 'N/A')])
-            dna_data.append(['Creation Date', pdf_meta.get('creationDate', 'N/A')])
-            dna_data.append(['Modification Date', pdf_meta.get('modDate', 'N/A')])
+            # Handle empty strings - show 'N/A' instead of blank
+            author = (pdf_meta.get('author') or '').strip() or 'N/A'
+            creator = (pdf_meta.get('creator') or '').strip() or 'N/A'
+            producer = (pdf_meta.get('producer') or '').strip() or 'N/A'
+            creation_date = (pdf_meta.get('creationDate') or '').strip() or 'N/A'
+            mod_date = (pdf_meta.get('modDate') or '').strip() or 'N/A'
+            
+            dna_data.append(['Author', author])
+            dna_data.append(['Creator', creator])
+            dna_data.append(['Producer', producer])
+            dna_data.append(['Creation Date', creation_date])
+            dna_data.append(['Modification Date', mod_date])
+            
+            # Add institutional indicators if found
+            if metadata.get('institutional_indicators'):
+                indicators_str = ', '.join(metadata['institutional_indicators'])
+                dna_data.append(['Institutional Indicators', indicators_str])
         else:
-            dna_data.append(['Software', metadata.get('software', 'N/A')])
-            dna_data.append(['Camera Make', metadata.get('Make', 'N/A')])
-            dna_data.append(['Camera Model', metadata.get('Model', 'N/A')])
-            dna_data.append(['Date Taken', metadata.get('DateTime', 'N/A')])
+            software = (metadata.get('software') or '').strip() or 'N/A'
+            camera_make = (metadata.get('Make') or '').strip() or 'N/A'
+            camera_model = (metadata.get('Model') or '').strip() or 'N/A'
+            date_taken = (metadata.get('DateTime') or '').strip() or 'N/A'
+            
+            dna_data.append(['Software', software])
+            dna_data.append(['Camera Make', camera_make])
+            dna_data.append(['Camera Model', camera_model])
+            dna_data.append(['Date Taken', date_taken])
         
         # Add noise variance
         dna_data.append(['Noise Variance', f"{analysis['noise']['variance']:.2f}"])
@@ -340,6 +387,60 @@ else:
         if dna_data:
             df_dna = pd.DataFrame(dna_data, columns=['Property', 'Value'])
             st.dataframe(df_dna, use_container_width=True, hide_index=True)
+        
+        # Alternative Analysis Section
+        if analysis['file_type'] == 'pdf':
+            metadata_completeness = metadata.get('metadata_completeness', {})
+            extracted_text = metadata.get('extracted_text')
+            institutional_indicators = metadata.get('institutional_indicators', [])
+            filename_analysis = metadata.get('filename_analysis', [])
+            
+            if not metadata_completeness.get('is_complete', True) or extracted_text or institutional_indicators or filename_analysis:
+                st.divider()
+                st.markdown("### 🔍 Alternative Analysis")
+                
+                # Metadata Completeness Status
+                if not metadata_completeness.get('is_complete', True):
+                    missing = metadata_completeness.get('missing_fields', [])
+                    st.warning(f"⚠️ **Metadata Incomplete**: Missing fields: {', '.join(missing).title()}")
+                    
+                    # Show assessment if available
+                    assessment = metadata.get('assessment')
+                    if assessment:
+                        st.info(f"📋 **Assessment**: {assessment}")
+                    
+                    # Show producer information
+                    if metadata_completeness.get('has_producer'):
+                        producer_val = metadata.get('producer') or 'Unknown'
+                        producer_note = metadata.get('producer_note', f"Producer: {producer_val}")
+                        st.info(f"ℹ️ **{producer_note}**")
+                        
+                        # Show producer assessment if available
+                        producer_assessment = metadata.get('producer_assessment')
+                        if producer_assessment:
+                            st.caption(f"💡 {producer_assessment}")
+                
+                # Filename Analysis
+                if filename_analysis:
+                    st.markdown("**Filename Analysis:**")
+                    for indicator in filename_analysis:
+                        st.markdown(f"- {indicator}")
+                
+                # Institutional Indicators
+                if institutional_indicators:
+                    st.markdown("**Institutional Indicators Found:**")
+                    for indicator in institutional_indicators:
+                        st.markdown(f"- {indicator.title()}")
+                
+                # Extracted Text Preview
+                if extracted_text:
+                    with st.expander("📄 Extracted Text Preview (First 200 characters)"):
+                        preview = metadata.get('extracted_text_full', extracted_text)[:200]
+                        st.text(preview)
+                        if len(metadata.get('extracted_text_full', extracted_text)) > 200:
+                            st.caption(f"Full text available ({len(metadata.get('extracted_text_full', extracted_text))} characters total)")
+                            with st.expander("View Full Extracted Text"):
+                                st.text(metadata.get('extracted_text_full', extracted_text))
         
         # Additional findings
         st.divider()
