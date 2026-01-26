@@ -26,6 +26,12 @@ class MetadataDetector:
         'microsoft word', 'microsoft excel', 'adobe indesign'
     ]
     
+    # Consumer software that shouldn't be used for institutional documents
+    CONSUMER_SOFTWARE = [
+        'aspose', 'libreoffice', 'openoffice', 'wps office',
+        'google docs', 'pages', 'numbers', 'preview'
+    ]
+    
     # Institutional indicator patterns
     INSTITUTIONAL_PATTERNS = [
         # UK Universities
@@ -319,13 +325,29 @@ class MetadataDetector:
                     creation_dt = datetime.strptime(creation_str, '%Y%m%d')
                     mod_dt = datetime.strptime(mod_str, '%Y%m%d')
                     
+                    # Calculate time difference
+                    time_diff = mod_dt - creation_dt
+                    days_diff = time_diff.days
+                    
+                    # Check for anomalies (modification before creation or large gap)
                     if mod_dt < creation_dt:
                         flags.append('Temporal Metadata Inconsistency')
                         risk_score += 30
                         has_actual_manipulation = True  # Timeline anomaly is actual manipulation
                         raw_data['timeline_anomaly'] = {
                             'creation': creation_dt.isoformat(),
-                            'modification': mod_dt.isoformat()
+                            'modification': mod_dt.isoformat(),
+                            'days_difference': days_diff
+                        }
+                    elif days_diff > 30:  # Large gap (more than 30 days) may indicate editing
+                        flags.append(f'Time gap anomaly: Document modified {days_diff} days after creation - may indicate editing/tampering')
+                        risk_score += min(25, days_diff // 30)  # Scale risk with gap size
+                        has_actual_manipulation = True
+                        raw_data['timeline_anomaly'] = {
+                            'creation': creation_dt.isoformat(),
+                            'modification': mod_dt.isoformat(),
+                            'days_difference': days_diff,
+                            'gap_type': 'large_gap'
                         }
             except (ValueError, IndexError) as e:
                 # Date parsing failed, skip this check
@@ -363,6 +385,26 @@ class MetadataDetector:
                 found_trusted = True
                 raw_data['trusted_software'] = trusted
                 break
+        
+        # Check for consumer software mismatch with institutional content
+        found_consumer = False
+        detected_consumer_software = None
+        for consumer in self.CONSUMER_SOFTWARE:
+            if consumer in producer or consumer in creator:
+                found_consumer = True
+                detected_consumer_software = consumer
+                raw_data['consumer_software'] = consumer
+                break
+        
+        # If institutional indicators found but consumer software used, flag mismatch
+        if institutional_indicators and found_consumer:
+            software_name = producer if detected_consumer_software in producer else creator
+            flags.append(f"Source mismatch: University Letter created in consumer software ('{software_name}') - official documents typically come from institutional document management systems or official PDF generators")
+            risk_score += 20
+            raw_data['source_mismatch'] = {
+                'software': software_name,
+                'type': 'consumer_software_with_institutional_content'
+            }
         
         # Determine trust score based on findings
         # Priority: Actual manipulation > Missing metadata with indicators > Missing metadata without indicators

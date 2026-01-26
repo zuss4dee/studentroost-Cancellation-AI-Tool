@@ -11,6 +11,7 @@ from .layout_detector import LayoutDetector
 from .signature_detector import SignatureDetector
 from .embedded_object_detector import EmbeddedObjectDetector
 from .confidence_scorer import ConfidenceScorer
+from .ai_content_detector import AIContentDetector
 
 __all__ = [
     'MetadataDetector',
@@ -21,5 +22,6 @@ __all__ = [
     'LayoutDetector',
     'SignatureDetector',
     'EmbeddedObjectDetector',
-    'ConfidenceScorer'
+    'ConfidenceScorer',
+    'AIContentDetector'
 ]

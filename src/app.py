@@ -21,6 +21,7 @@ from detectors.layout_detector import LayoutDetector
 from detectors.signature_detector import SignatureDetector
 from detectors.embedded_object_detector import EmbeddedObjectDetector
 from detectors.confidence_scorer import ConfidenceScorer
+from detectors.ai_content_detector import AIContentDetector
 
 # Page configuration
 st.set_page_config(
@@ -73,6 +74,7 @@ def analyze_file(uploaded_file):
     # Initialize all detectors
     metadata_detector = MetadataDetector()
     pixel_detector = PixelDetector()
+    ai_content_detector = AIContentDetector()
     
     # For PDFs, initialize PDF-specific detectors
     pdf_doc = None
@@ -100,11 +102,39 @@ def analyze_file(uploaded_file):
     ela_heatmap = pixel_detector.analyze_ela(display_image)
     noise_result = pixel_detector.analyze_noise(display_image)
     
+    # Run AI content detection (if text is available)
+    ai_result = None
+    if file_type == 'pdf' and pdf_doc:
+        try:
+            # Extract text for AI analysis
+            extracted_text = metadata_result.get('raw_data', {}).get('extracted_text_full', '')
+            if not extracted_text:
+                # Fallback: extract text directly
+                text_parts = []
+                for page_num in range(min(len(pdf_doc), 3)):
+                    try:
+                        page = pdf_doc[page_num]
+                        page_text = page.get_text()
+                        if page_text:
+                            text_parts.append(page_text)
+                    except Exception:
+                        continue
+                extracted_text = '\n\n'.join(text_parts)
+            
+            if extracted_text and len(extracted_text.strip()) > 50:
+                ai_result = ai_content_detector.analyze(extracted_text)
+        except Exception as e:
+            # AI detection failed, continue without it
+            ai_result = None
+    
     # Run PDF-specific detectors
     all_results = {
         'metadata': metadata_result,
         'pixel': noise_result
     }
+    
+    if ai_result:
+        all_results['ai_content'] = ai_result
     
     if file_type == 'pdf' and pdf_doc:
         # Run all PDF-specific detectors
@@ -158,8 +188,20 @@ def analyze_file(uploaded_file):
                 metadata_result['trust_score'] = 20
             else:
                 metadata_result['trust_score'] = min(metadata_result['trust_score'], 20)
+        
+        # Add AI content to results if detected
+        if ai_result and ai_result.get('is_ai_generated'):
+            if 'ai_content' not in all_results:
+                all_results['ai_content'] = ai_result
     else:
         confidence_result = None
+    
+    # Check for correlation between low ELA risk and suspicious metadata
+    ela_risk_low = not noise_result.get('flags') or len([f for f in noise_result.get('flags', []) if 'smoothing' in f.lower() or 'ela' in f.lower()]) == 0
+    metadata_suspicious = len(metadata_result.get('flags', [])) > 0 or metadata_result.get('risk_score', 0) > 30
+    correlation_flag = None
+    if ela_risk_low and metadata_suspicious:
+        correlation_flag = "⚠️ Correlation: Low image manipulation risk (ELA) but suspicious metadata detected. Metadata issues may indicate document forgery even without visible image tampering."
     
     # Combine results
     analysis = {
@@ -171,6 +213,8 @@ def analyze_file(uploaded_file):
         'display_image': display_image,
         'ela_heatmap': ela_heatmap,
         'confidence': confidence_result,
+        'ai_content': ai_result,
+        'correlation_flag': correlation_flag,
         'all_results': all_results if file_type == 'pdf' else {}
     }
     
@@ -179,6 +223,469 @@ def analyze_file(uploaded_file):
         pdf_doc.close()
     
     return analysis
+
+
+def generate_forensic_report(analysis):
+    """
+    Generate a comprehensive narrative forensic report.
+    
+    Args:
+        analysis: Complete analysis dictionary
+        
+    Returns:
+        str: Formatted narrative report
+    """
+    report_lines = []
+    
+    # Header
+    report_lines.append("=" * 80)
+    report_lines.append("FORENSIC DOCUMENT ANALYSIS REPORT")
+    report_lines.append("=" * 80)
+    report_lines.append("")
+    report_lines.append(f"Document: {analysis['filename']}")
+    report_lines.append(f"Analysis Date: {analysis['timestamp']}")
+    report_lines.append(f"File Type: {analysis['file_type'].upper()}")
+    report_lines.append("")
+    report_lines.append("=" * 80)
+    report_lines.append("")
+    
+    # Extract key data
+    metadata = analysis['metadata']
+    metadata_raw = metadata.get('raw_data', {})
+    forgery_score = metadata.get('risk_score', 0)
+    trust_score = metadata.get('trust_score', 0)
+    confidence_data = analysis.get('confidence')
+    ai_content = analysis.get('ai_content')
+    
+    # Overall Assessment
+    report_lines.append("EXECUTIVE SUMMARY")
+    report_lines.append("-" * 80)
+    report_lines.append("")
+    
+    # Determine overall verdict
+    if confidence_data:
+        confidence_level = confidence_data.get('confidence_level', 'Unknown')
+        confidence_score = confidence_data.get('confidence_score', 0)
+    else:
+        confidence_level = "Not Available"
+        confidence_score = 0
+    
+    # Generate verdict statement
+    if forgery_score >= 70 or trust_score < 40:
+        verdict_strength = "strong evidence"
+        verdict_conclusion = "this document is likely not an original, unaltered document"
+    elif forgery_score >= 50 or trust_score < 60:
+        verdict_strength = "significant technical indicators"
+        verdict_conclusion = "this document may not be an original, unaltered document"
+    elif forgery_score >= 30 or trust_score < 70:
+        verdict_strength = "some technical indicators"
+        verdict_conclusion = "this document requires further verification"
+    else:
+        verdict_strength = "minimal technical indicators"
+        verdict_conclusion = "this document appears to be authentic"
+    
+    report_lines.append(f"Based on the comprehensive forensic analysis, there are {verdict_strength} that")
+    report_lines.append(f"{verdict_conclusion}.")
+    report_lines.append("")
+    
+    if confidence_data:
+        report_lines.append(f"Confidence Level: {confidence_level} ({confidence_score:.0f}% confidence)")
+    report_lines.append(f"Forgery Probability Score: {forgery_score}/100")
+    report_lines.append(f"Trust Score: {trust_score}/100")
+    report_lines.append("")
+    
+    # Key Red Flags Section
+    red_flags = []
+    
+    # Software mismatch
+    pdf_meta = metadata_raw.get('pdf_metadata', {})
+    producer = pdf_meta.get('producer', '')
+    creator = pdf_meta.get('creator', '')
+    author = pdf_meta.get('author', '')
+    
+    # Check for consumer software with institutional content
+    institutional_indicators = metadata_raw.get('institutional_indicators', [])
+    source_mismatch = metadata_raw.get('source_mismatch', {})
+    
+    if source_mismatch or (institutional_indicators and producer):
+        software_name = source_mismatch.get('software', producer or creator)
+        if software_name:
+            red_flags.append({
+                'title': 'Software Mismatch',
+                'detail': f'The document was produced using "{software_name}".',
+                'explanation': 'Official government/institutional documents are typically generated by internal document management systems, not by consumer-grade third-party software or Word-to-PDF conversion tools.'
+            })
+    
+    # Suspicious metadata
+    if author:
+        red_flags.append({
+            'title': 'Suspicious Metadata - Author Field',
+            'detail': f'The PDF author is listed as "{author}".',
+            'explanation': 'Official UKVI/Home Office documents do not typically carry the name of an individual staff member in the metadata properties. This suggests manual document creation or modification.'
+        })
+    
+    # Timeline anomalies
+    timeline_anomaly = metadata_raw.get('timeline_anomaly', {})
+    if timeline_anomaly:
+        days_diff = timeline_anomaly.get('days_difference', 0)
+        creation = timeline_anomaly.get('creation', '')
+        modification = timeline_anomaly.get('modification', '')
+        
+        if days_diff:
+            red_flags.append({
+                'title': 'Modification Gap Anomaly',
+                'detail': f'There is a {days_diff}-day anomaly between the original creation ({creation[:10] if len(creation) > 10 else creation}) and the modification ({modification[:10] if len(modification) > 10 else modification}).',
+                'explanation': 'This strongly indicates the file was edited or modified years after it was first "created", which is highly unusual for official documents.'
+            })
+    
+    # Creation date discrepancy
+    creation_date = pdf_meta.get('creationDate', '')
+    mod_date = pdf_meta.get('modDate', '')
+    if creation_date and '202' in creation_date:
+        # Extract year from creation date
+        try:
+            if creation_date.startswith('D:'):
+                creation_date = creation_date[2:]
+            if len(creation_date) >= 4:
+                creation_year = creation_date[:4]
+                # Check if content mentions different years (basic check)
+                extracted_text = metadata_raw.get('extracted_text', '')
+                if extracted_text and ('2024' in extracted_text or '2025' in extracted_text or '2026' in extracted_text):
+                    content_years = []
+                    for year in ['2024', '2025', '2026', '2027']:
+                        if year in extracted_text:
+                            content_years.append(year)
+                    if content_years and creation_year < max(content_years):
+                        red_flags.append({
+                            'title': 'Creation Date Discrepancy',
+                            'detail': f'The creation date is listed as {creation_year}, but the content of the document discusses events in {", ".join(content_years)}.',
+                            'explanation': 'This temporal inconsistency suggests the document metadata was set incorrectly or the document was created/modified at a different time than claimed.'
+                        })
+        except:
+            pass
+    
+    # AI indicators
+    if ai_content and ai_content.get('is_ai_generated'):
+        ai_confidence = ai_content.get('confidence', 0)
+        red_flags.append({
+            'title': 'AI-Generated Content Indicators',
+            'detail': f'The tool detected a {ai_confidence:.0f}% confidence level for AI-generated content.',
+            'explanation': 'This is particularly notable in formal documents, as AI-generated text often follows predictable linguistic patterns found in Large Language Models (LLMs). Official documents are typically written by human staff members.'
+        })
+    
+    # Missing metadata
+    completeness = metadata_raw.get('metadata_completeness', {})
+    if not completeness.get('is_complete', True) and not institutional_indicators:
+        missing = completeness.get('missing_fields', [])
+        if missing:
+            red_flags.append({
+                'title': 'Missing Critical Metadata',
+                'detail': f'Critical metadata fields are missing: {", ".join(missing).title()}.',
+                'explanation': 'Official documents typically contain complete metadata including author and creator information. Missing metadata may indicate document manipulation or re-saving.'
+            })
+    
+    # Suspicious software
+    suspicious_software = metadata_raw.get('suspicious_software')
+    if suspicious_software:
+        red_flags.append({
+            'title': 'Digital Manipulation Software Detected',
+            'detail': f'Software used: {suspicious_software.title()}.',
+            'explanation': 'The presence of image editing or manipulation software in document metadata strongly suggests the document was digitally altered or created using inappropriate tools for official documents.'
+        })
+    
+    # Low trust score
+    if trust_score < 50:
+        red_flags.append({
+            'title': 'Low Trust Score',
+            'detail': f'The overall {trust_score}/100 Trust Score and {confidence_level if confidence_data else "analysis"} verdict suggest a high probability of forgery or significant tampering.',
+            'explanation': 'A low trust score indicates multiple suspicious indicators were detected, including metadata issues, software mismatches, or manipulation evidence.'
+        })
+    
+    # Write Red Flags Section
+    if red_flags:
+        report_lines.append("KEY RED FLAGS FROM ANALYSIS")
+        report_lines.append("-" * 80)
+        report_lines.append("")
+        
+        for i, flag in enumerate(red_flags, 1):
+            report_lines.append(f"{i}. {flag['title']}")
+            report_lines.append("")
+            report_lines.append(f"   {flag['detail']}")
+            report_lines.append("")
+            report_lines.append(f"   Explanation: {flag['explanation']}")
+            report_lines.append("")
+    
+    # Additional Findings
+    report_lines.append("ADDITIONAL FINDINGS")
+    report_lines.append("-" * 80)
+    report_lines.append("")
+    
+    # Metadata details
+    if pdf_meta:
+        report_lines.append("Document Metadata:")
+        if author:
+            report_lines.append(f"  - Author: {author}")
+        if creator:
+            report_lines.append(f"  - Creator: {creator}")
+        if producer:
+            report_lines.append(f"  - Producer: {producer}")
+        if creation_date:
+            report_lines.append(f"  - Creation Date: {creation_date}")
+        if mod_date:
+            report_lines.append(f"  - Modification Date: {mod_date}")
+        report_lines.append("")
+    
+    # Institutional indicators
+    if institutional_indicators:
+        report_lines.append(f"Institutional Indicators Found: {', '.join(institutional_indicators)}")
+        report_lines.append("")
+    
+    # AI content details
+    if ai_content and ai_content.get('is_ai_generated'):
+        ai_metrics = ai_content.get('metrics', {})
+        report_lines.append("AI Content Detection Details:")
+        if ai_metrics.get('punctuation_diversity') is not None:
+            report_lines.append(f"  - Punctuation Diversity: {ai_metrics['punctuation_diversity']:.3f}")
+        if ai_metrics.get('word_entropy') is not None:
+            report_lines.append(f"  - Word Entropy: {ai_metrics['word_entropy']:.2f}")
+        if ai_metrics.get('paragraph_uniformity') is not None:
+            report_lines.append(f"  - Paragraph Uniformity: {ai_metrics['paragraph_uniformity']:.2f}")
+        if ai_metrics.get('ai_phrases_count', 0) > 0:
+            report_lines.append(f"  - AI-Typical Phrases Detected: {ai_metrics['ai_phrases_count']}")
+        report_lines.append("")
+    
+    # Summary for Case
+    report_lines.append("SUMMARY FOR YOUR CASE")
+    report_lines.append("-" * 80)
+    report_lines.append("")
+    
+    if forgery_score >= 50 or trust_score < 50:
+        report_lines.append("While the content itself may sound plausible, the metadata and digital signature")
+        report_lines.append("analysis indicate that the file was likely manually assembled, modified, or")
+        report_lines.append("reconstructed.")
+        report_lines.append("")
+        report_lines.append("In a professional or legal context, a document with:")
+        if confidence_data:
+            report_lines.append(f"- A '{confidence_level}' verdict")
+        report_lines.append(f"- A {trust_score}/100 Trust Score")
+        if author:
+            report_lines.append(f"- '{author}' as the metadata author")
+        if producer:
+            report_lines.append(f"- '{producer}' as the producer software")
+        report_lines.append("")
+        report_lines.append("would not be considered a verified original without additional authentication.")
+    else:
+        report_lines.append("The document shows minimal indicators of manipulation. However, it is")
+        report_lines.append("recommended to verify authenticity through official channels when dealing")
+        report_lines.append("with critical documents.")
+    
+    report_lines.append("")
+    report_lines.append("=" * 80)
+    report_lines.append("END OF REPORT")
+    report_lines.append("=" * 80)
+    
+    return "\n".join(report_lines)
+
+
+def format_report_for_display(analysis):
+    """
+    Format the forensic report for better Streamlit markdown display.
+    
+    Args:
+        analysis: Complete analysis dictionary
+        
+    Returns:
+        str: Formatted markdown report
+    """
+    metadata = analysis['metadata']
+    metadata_raw = metadata.get('raw_data', {})
+    forgery_score = metadata.get('risk_score', 0)
+    trust_score = metadata.get('trust_score', 0)
+    confidence_data = analysis.get('confidence')
+    ai_content = analysis.get('ai_content')
+    
+    report_parts = []
+    
+    # Header
+    report_parts.append("## 📋 Forensic Document Analysis Report")
+    report_parts.append("")
+    report_parts.append(f"**Document:** {analysis['filename']}  ")
+    report_parts.append(f"**Analysis Date:** {analysis['timestamp']}  ")
+    report_parts.append(f"**File Type:** {analysis['file_type'].upper()}")
+    report_parts.append("")
+    report_parts.append("---")
+    report_parts.append("")
+    
+    # Executive Summary
+    report_parts.append("### Executive Summary")
+    report_parts.append("")
+    
+    if confidence_data:
+        confidence_level = confidence_data.get('confidence_level', 'Unknown')
+        confidence_score = confidence_data.get('confidence_score', 0)
+    else:
+        confidence_level = "Not Available"
+        confidence_score = 0
+    
+    # Generate verdict statement
+    if forgery_score >= 70 or trust_score < 40:
+        verdict_strength = "**strong evidence**"
+        verdict_conclusion = "this document is **likely not an original, unaltered document**"
+    elif forgery_score >= 50 or trust_score < 60:
+        verdict_strength = "**significant technical indicators**"
+        verdict_conclusion = "this document **may not be an original, unaltered document**"
+    elif forgery_score >= 30 or trust_score < 70:
+        verdict_strength = "**some technical indicators**"
+        verdict_conclusion = "this document **requires further verification**"
+    else:
+        verdict_strength = "**minimal technical indicators**"
+        verdict_conclusion = "this document **appears to be authentic**"
+    
+    report_parts.append(f"Based on the comprehensive forensic analysis, there are {verdict_strength} that")
+    report_parts.append(f"{verdict_conclusion}.")
+    report_parts.append("")
+    
+    # Key Metrics
+    report_parts.append("**Key Metrics:**")
+    if confidence_data:
+        report_parts.append(f"- **Confidence Level:** {confidence_level} ({confidence_score:.0f}% confidence)")
+    report_parts.append(f"- **Forgery Probability Score:** {forgery_score}/100")
+    report_parts.append(f"- **Trust Score:** {trust_score}/100")
+    report_parts.append("")
+    
+    # Key Red Flags
+    red_flags = []
+    pdf_meta = metadata_raw.get('pdf_metadata', {})
+    producer = pdf_meta.get('producer', '')
+    creator = pdf_meta.get('creator', '')
+    author = pdf_meta.get('author', '')
+    institutional_indicators = metadata_raw.get('institutional_indicators', [])
+    source_mismatch = metadata_raw.get('source_mismatch', {})
+    
+    if source_mismatch or (institutional_indicators and producer):
+        software_name = source_mismatch.get('software', producer or creator)
+        if software_name:
+            red_flags.append({
+                'title': 'Software Mismatch',
+                'detail': f'The document was produced using **"{software_name}"**.',
+                'explanation': 'Official government/institutional documents are typically generated by internal document management systems, not by consumer-grade third-party software or Word-to-PDF conversion tools.'
+            })
+    
+    if author:
+        red_flags.append({
+            'title': 'Suspicious Metadata - Author Field',
+            'detail': f'The PDF author is listed as **"{author}"**.',
+            'explanation': 'Official UKVI/Home Office documents do not typically carry the name of an individual staff member in the metadata properties. This suggests manual document creation or modification.'
+        })
+    
+    timeline_anomaly = metadata_raw.get('timeline_anomaly', {})
+    if timeline_anomaly:
+        days_diff = timeline_anomaly.get('days_difference', 0)
+        creation = timeline_anomaly.get('creation', '')
+        modification = timeline_anomaly.get('modification', '')
+        
+        if days_diff:
+            red_flags.append({
+                'title': 'Modification Gap Anomaly',
+                'detail': f'There is a **{days_diff}-day anomaly** between the original creation ({creation[:10] if len(creation) > 10 else creation}) and the modification ({modification[:10] if len(modification) > 10 else modification}).',
+                'explanation': 'This strongly indicates the file was edited or modified years after it was first "created", which is highly unusual for official documents.'
+            })
+    
+    creation_date = pdf_meta.get('creationDate', '')
+    if creation_date and '202' in creation_date:
+        try:
+            if creation_date.startswith('D:'):
+                creation_date = creation_date[2:]
+            if len(creation_date) >= 4:
+                creation_year = creation_date[:4]
+                extracted_text = metadata_raw.get('extracted_text', '')
+                if extracted_text and ('2024' in extracted_text or '2025' in extracted_text or '2026' in extracted_text):
+                    content_years = []
+                    for year in ['2024', '2025', '2026', '2027']:
+                        if year in extracted_text:
+                            content_years.append(year)
+                    if content_years and creation_year < max(content_years):
+                        red_flags.append({
+                            'title': 'Creation Date Discrepancy',
+                            'detail': f'The creation date is listed as **{creation_year}**, but the content of the document discusses events in **{", ".join(content_years)}**.',
+                            'explanation': 'This temporal inconsistency suggests the document metadata was set incorrectly or the document was created/modified at a different time than claimed.'
+                        })
+        except:
+            pass
+    
+    if ai_content and ai_content.get('is_ai_generated'):
+        ai_confidence = ai_content.get('confidence', 0)
+        red_flags.append({
+            'title': 'AI-Generated Content Indicators',
+            'detail': f'The tool detected a **{ai_confidence:.0f}% confidence level** for AI-generated content.',
+            'explanation': 'This is particularly notable in formal documents, as AI-generated text often follows predictable linguistic patterns found in Large Language Models (LLMs). Official documents are typically written by human staff members.'
+        })
+    
+    completeness = metadata_raw.get('metadata_completeness', {})
+    if not completeness.get('is_complete', True) and not institutional_indicators:
+        missing = completeness.get('missing_fields', [])
+        if missing:
+            red_flags.append({
+                'title': 'Missing Critical Metadata',
+                'detail': f'Critical metadata fields are missing: **{", ".join(missing).title()}**.',
+                'explanation': 'Official documents typically contain complete metadata including author and creator information. Missing metadata may indicate document manipulation or re-saving.'
+            })
+    
+    suspicious_software = metadata_raw.get('suspicious_software')
+    if suspicious_software:
+        red_flags.append({
+            'title': 'Digital Manipulation Software Detected',
+            'detail': f'Software used: **{suspicious_software.title()}**.',
+            'explanation': 'The presence of image editing or manipulation software in document metadata strongly suggests the document was digitally altered or created using inappropriate tools for official documents.'
+        })
+    
+    if trust_score < 50:
+        red_flags.append({
+            'title': 'Low Trust Score',
+            'detail': f'The overall **{trust_score}/100 Trust Score** and **{confidence_level if confidence_data else "analysis"}** verdict suggest a high probability of forgery or significant tampering.',
+            'explanation': 'A low trust score indicates multiple suspicious indicators were detected, including metadata issues, software mismatches, or manipulation evidence.'
+        })
+    
+    if red_flags:
+        report_parts.append("### 🔴 Key Red Flags from Analysis")
+        report_parts.append("")
+        
+        for i, flag in enumerate(red_flags, 1):
+            report_parts.append(f"#### {i}. {flag['title']}")
+            report_parts.append("")
+            report_parts.append(flag['detail'])
+            report_parts.append("")
+            report_parts.append(f"*Explanation:* {flag['explanation']}")
+            report_parts.append("")
+    
+    # Summary
+    report_parts.append("---")
+    report_parts.append("")
+    report_parts.append("### Summary for Your Case")
+    report_parts.append("")
+    
+    if forgery_score >= 50 or trust_score < 50:
+        report_parts.append("While the content itself may sound plausible, the metadata and digital signature")
+        report_parts.append("analysis indicate that the file was likely manually assembled, modified, or")
+        report_parts.append("reconstructed.")
+        report_parts.append("")
+        report_parts.append("In a professional or legal context, a document with:")
+        report_parts.append("")
+        if confidence_data:
+            report_parts.append(f"- A **'{confidence_level}'** verdict")
+        report_parts.append(f"- A **{trust_score}/100 Trust Score**")
+        if author:
+            report_parts.append(f"- **'{author}'** as the metadata author")
+        if producer:
+            report_parts.append(f"- **'{producer}'** as the producer software")
+        report_parts.append("")
+        report_parts.append("would **not be considered a verified original** without additional authentication.")
+    else:
+        report_parts.append("The document shows minimal indicators of manipulation. However, it is")
+        report_parts.append("recommended to verify authenticity through official channels when dealing")
+        report_parts.append("with critical documents.")
+    
+    return "\n".join(report_parts)
 
 
 def create_forgery_gauge(forgery_score):
@@ -281,8 +788,12 @@ if st.session_state.current_analysis is None:
 else:
     analysis = st.session_state.current_analysis
     
-    # Two-column layout
-    col1, col2 = st.columns([1.2, 1])
+    # Create main tabs for Analysis Dashboard, Detailed Analysis, and Forensic Report
+    main_tab1, main_tab2, main_tab3 = st.tabs(['📊 Analysis Dashboard', '🔍 Detailed Analysis', '📄 Forensic Report'])
+    
+    with main_tab1:
+        # Two-column layout
+        col1, col2 = st.columns([1.2, 1])
     
     # Column 1: Viewer
     with col1:
@@ -362,6 +873,24 @@ else:
     # Column 2: Verdict
     with col2:
         st.subheader('⚖️ Forensic Verdict')
+        with st.expander("ℹ️ Understanding Your Results", expanded=False):
+            st.markdown("""
+            **Forensic Verdict** provides a comprehensive assessment of document authenticity.
+            
+            **Key Components:**
+            1. **Confidence Score**: How certain the system is about its assessment
+            2. **Forgery Probability**: Likelihood the document was manipulated (0-100)
+            3. **Trust Score**: How trustworthy the document metadata appears (0-100)
+            4. **Forensic Signals**: Specific anomalies and issues detected
+            5. **File DNA**: Extracted metadata and document properties
+            
+            **Interpreting Scores:**
+            - **High Forgery Probability + Low Trust Score** = Strong evidence of fraud
+            - **Low Forgery Probability + High Trust Score** = Document appears authentic
+            - **Mixed scores** = Requires manual review and verification
+            
+            Always combine automated analysis with manual document review for critical decisions.
+            """)
         
         # Confidence Score (if available for PDFs)
         if analysis.get('confidence') and analysis['file_type'] == 'pdf':
@@ -384,6 +913,17 @@ else:
                 conf_bg = "background-color: #e8f5e9; padding: 10px; border-radius: 5px;"
             
             st.markdown(f"### 🎯 Confidence Score: {confidence_score:.0f}%")
+            with st.expander("ℹ️ What is Confidence Score?", expanded=False):
+                st.markdown("""
+                **Confidence Score** measures how certain the system is about its fraud detection assessment.
+                
+                - **90-100% (Definitive Fraud)**: Multiple strong indicators detected. High certainty of document manipulation.
+                - **70-89% (High Suspicion)**: Several suspicious indicators found. Document likely fraudulent.
+                - **50-69% (Moderate Suspicion)**: Some anomalies detected. Requires further investigation.
+                - **0-49% (Low Suspicion)**: Few or weak indicators. Document appears legitimate.
+                
+                This score combines findings from metadata, structure, content, pixel, and signature analysis.
+                """)
             st.markdown(f"**{conf_color} {confidence_level}**")
             st.info(confidence_data['recommendation'])
             
@@ -403,23 +943,120 @@ else:
         forgery_score = analysis['metadata']['risk_score']
         trust_score = analysis['metadata']['trust_score']
         
-        st.markdown("### Forgery Probability")
+        st.markdown("#### Forgery Probability")
+        with st.expander("ℹ️ What is Forgery Probability?", expanded=False):
+            st.markdown("""
+            **Forgery Probability** (0-100) indicates the likelihood that the document has been manipulated or forged.
+            
+            - **0-30 (Green)**: Low risk - Document appears authentic
+            - **30-70 (Orange)**: Moderate risk - Some suspicious indicators found
+            - **70-100 (Red)**: High risk - Strong evidence of manipulation or forgery
+            
+            This score is calculated from detected anomalies across all forensic analysis methods.
+            """)
         forgery_gauge = create_forgery_gauge(forgery_score)
         st.plotly_chart(forgery_gauge, use_container_width=True)
         
         # Trust Score
+        st.markdown("#### Trust Score")
+        with st.expander("ℹ️ What is Trust Score?", expanded=False):
+            st.markdown("""
+            **Trust Score** (0-100) measures how trustworthy the document appears based on metadata and provenance.
+            
+            - **70-100 (High Trust)**: Document metadata is complete and consistent. Created with trusted software. No manipulation indicators.
+            - **40-69 (Medium Trust)**: Some metadata missing or inconsistencies found. May be legitimate but requires verification.
+            - **0-39 (Low Trust)**: Significant metadata issues, suspicious software detected, or manipulation indicators present.
+            
+            **Key Factors:**
+            - Presence of author/creator metadata
+            - Software used to create the document
+            - Timeline consistency (creation vs modification dates)
+            - Institutional indicators (for official documents)
+            - Detection of manipulation software (Photoshop, etc.)
+            
+            A high trust score means the document's metadata suggests authenticity, while a low score indicates potential fraud.
+            """)
         trust_color = "🟢" if trust_score >= 70 else "🟡" if trust_score >= 40 else "🔴"
         st.metric("Trust Score", f"{trust_score}/100", delta=None)
         st.caption(f"{trust_color} {'High Trust' if trust_score >= 70 else 'Medium Trust' if trust_score >= 40 else 'Low Trust'}")
         
         st.divider()
         
-        # Forensic Signals
-        st.markdown("### 🚨 Forensic Signals")
-        
+        # Summary of key findings (keep minimal on dashboard)
+        st.markdown("### 🚨 Key Findings Summary")
         all_flags = []
         all_flags.extend(analysis['metadata']['flags'])
         all_flags.extend(analysis['noise']['flags'])
+        
+        # Add AI content detection flags if available
+        if analysis.get('ai_content') and analysis['ai_content'].get('is_ai_generated'):
+            ai_content = analysis['ai_content']
+            confidence = ai_content.get('confidence', 0)
+            all_flags.append(f"⚠️ AI-Generated Content Detected (Confidence: {confidence:.1f}%)")
+        
+        # Add correlation flag if detected
+        if analysis.get('correlation_flag'):
+            all_flags.append(analysis['correlation_flag'])
+        
+        # Show only top 5 most critical flags on dashboard
+        critical_flags = [f for f in all_flags if any(keyword in f for keyword in ['Digital Manipulation', 'Time gap', 'AI-Generated', 'Missing Author', 'suspicious'])]
+        if critical_flags:
+            st.warning(f"**{len(critical_flags)} critical issue(s) detected.** See 'Detailed Analysis' tab for complete list.")
+            for flag in critical_flags[:3]:  # Show top 3
+                st.markdown(f"⚠️ {flag}")
+            if len(critical_flags) > 3:
+                st.caption(f"*+ {len(critical_flags) - 3} more issues. See Detailed Analysis tab.*")
+        elif all_flags:
+            st.info(f"**{len(all_flags)} indicator(s) found.** See 'Detailed Analysis' tab for details.")
+        else:
+            st.success("✅ No suspicious indicators detected")
+    
+    # Detailed Analysis Tab
+    with main_tab2:
+        st.markdown("## 🔍 Detailed Analysis")
+        st.markdown("Complete forensic analysis results and detailed findings.")
+        st.markdown("")
+        
+        # Forensic Signals
+        st.markdown("### 🚨 Forensic Signals")
+        with st.expander("ℹ️ What are Forensic Signals?", expanded=False):
+            st.markdown("""
+            **Forensic Signals** are specific anomalies and indicators detected during document analysis.
+            
+            **Signal Types:**
+            - **🔴 Red Flags**: Strong evidence of manipulation (Photoshop detection, timeline anomalies)
+            - **🟠 Orange Warnings**: Suspicious indicators requiring investigation
+            - **🟡 Yellow Alerts**: Minor anomalies that may be legitimate
+            - **ℹ️ Info**: Contextual information about the document
+            
+            **Common Signals:**
+            - Time gap anomalies (document modified long after creation)
+            - Suspicious software detection (Photoshop, GIMP, etc.)
+            - Missing metadata (author, creator fields)
+            - AI-generated content indicators
+            - Pixel-level manipulation (ELA anomalies)
+            - PDF structure inconsistencies
+            
+            Review each signal to understand what was detected and why it's significant.
+            """)
+        
+        # Collect all flags
+        all_flags = []
+        all_flags.extend(analysis['metadata']['flags'])
+        all_flags.extend(analysis['noise']['flags'])
+        
+        # Add AI content detection flags if available
+        if analysis.get('ai_content') and analysis['ai_content'].get('is_ai_generated'):
+            ai_content = analysis['ai_content']
+            confidence = ai_content.get('confidence', 0)
+            all_flags.append(f"⚠️ AI-Generated Content Detected (Confidence: {confidence:.1f}%)")
+            # Add individual AI indicators
+            for indicator in ai_content.get('indicators', []):
+                all_flags.append(f"⚠️ {indicator}")
+        
+        # Add correlation flag if detected
+        if analysis.get('correlation_flag'):
+            all_flags.append(analysis['correlation_flag'])
         
         # Add flags from PDF-specific detectors if available
         if analysis['file_type'] == 'pdf' and analysis.get('all_results'):
@@ -478,10 +1115,124 @@ else:
         else:
             st.success("✅ No suspicious forensic signals detected")
         
+        # AI Content Analysis (moved to Detailed Analysis tab)
+        if analysis.get('ai_content') and analysis['ai_content'].get('is_ai_generated'):
+            st.divider()
+            st.markdown("### 🤖 AI Content Analysis")
+            ai_content = analysis['ai_content']
+            confidence = ai_content.get('confidence', 0)
+            
+            st.warning(f"**AI-Generated Content Detected** (Confidence: {confidence:.1f}%)")
+            
+            with st.expander("ℹ️ What is AI Content Detection?", expanded=False):
+                st.markdown("""
+                **AI Content Detection** analyzes text patterns to identify AI-generated content.
+                
+                **How it works:**
+                - **Punctuation Diversity**: AI text often uses limited punctuation types
+                - **Word Entropy**: Measures vocabulary variety (AI text tends to be less diverse)
+                - **Paragraph Uniformity**: AI often produces paragraphs of similar length
+                - **AI-Typical Phrases**: Detects common phrases used by AI writing assistants
+                - **Sentence Variance**: AI text often has uniform sentence lengths
+                - **Repetition Patterns**: Identifies repetitive word patterns common in AI text
+                
+                **Confidence Score**: Higher scores indicate stronger evidence of AI generation.
+                """)
+            
+            metrics = ai_content.get('metrics', {})
+            if metrics:
+                with st.expander("📊 AI Detection Metrics", expanded=True):
+                    if 'punctuation_diversity' in metrics:
+                        st.metric("Punctuation Diversity", f"{metrics['punctuation_diversity']:.3f}")
+                        st.caption("Lower values (< 0.05) suggest AI generation. Measures variety of punctuation marks used.")
+                    
+                    if 'word_entropy' in metrics:
+                        st.metric("Word Entropy", f"{metrics['word_entropy']:.2f}")
+                        st.caption("Lower values (< 8.5) suggest AI generation. Measures vocabulary diversity using Shannon entropy.")
+                    
+                    if 'paragraph_uniformity' in metrics:
+                        st.metric("Paragraph Uniformity", f"{metrics['paragraph_uniformity']:.2f}")
+                        st.caption("Higher values (> 0.85) suggest AI generation. Measures how similar paragraph lengths are.")
+                    
+                    if 'ai_phrases_count' in metrics:
+                        st.metric("AI-Typical Phrases Found", metrics['ai_phrases_count'])
+                        if metrics.get('ai_phrases'):
+                            st.caption(f"Detected phrases: {', '.join(metrics['ai_phrases'][:10])}")
+            
+            # Show exact locations of AI phrases
+            phrase_locations = metrics.get('ai_phrase_locations', [])
+            if phrase_locations:
+                st.markdown("#### 📍 Exact Locations of AI-Typical Phrases in Text")
+                with st.expander("View detected phrases with exact text locations", expanded=True):
+                    st.markdown("""
+                    **How to read this:**
+                    - Each detected AI-typical phrase is shown with its exact character position in the document
+                    - The context shows surrounding text (50 characters before and after)
+                    - The phrase is highlighted in **bold** within the context
+                    - Use the character positions to locate these phrases in the original document
+                    """)
+                    
+                    for i, loc in enumerate(phrase_locations[:15], 1):  # Show first 15
+                        st.markdown(f"**{i}. Phrase: \"{loc['phrase']}\"**")
+                        st.markdown(f"📍 **Position**: Characters {loc['position']} to {loc['end_position']} in document")
+                        
+                        # Show context with highlighted phrase
+                        context = loc['context']
+                        phrase_in_context = loc['phrase']
+                        # Find the phrase in the context (case-insensitive)
+                        context_lower = context.lower()
+                        phrase_lower = phrase_in_context.lower()
+                        phrase_start = context_lower.find(phrase_lower)
+                        
+                        if phrase_start != -1:
+                            before = context[:phrase_start]
+                            phrase_text = context[phrase_start:phrase_start + len(phrase_in_context)]
+                            after = context[phrase_start + len(phrase_in_context):]
+                            
+                            # Create highlighted text
+                            highlighted = f"...{before}**{phrase_text}**{after}..."
+                            st.markdown(f"**Context (50 chars before/after):**")
+                            st.markdown(highlighted)
+                        else:
+                            st.markdown(f"**Context:**")
+                            st.code(context, language=None)
+                        
+                        if i < len(phrase_locations):
+                            st.divider()
+                    
+                    if len(phrase_locations) > 15:
+                        st.info(f"*Showing first 15 of {len(phrase_locations)} detected phrases. Scroll to see more.*")
+            
+            # Show other indicators
+            indicators = ai_content.get('indicators', [])
+            if indicators:
+                st.markdown("#### 🔍 Additional AI Indicators")
+                for indicator in indicators:
+                    st.markdown(f"⚠️ {indicator}")
+        
         st.divider()
         
         # File DNA
         st.markdown("### 🧬 File DNA")
+        with st.expander("ℹ️ What is File DNA?", expanded=False):
+            st.markdown("""
+            **File DNA** contains the extracted metadata and properties that uniquely identify how the document was created.
+            
+            **Key Fields:**
+            - **Author/Creator**: Who created the document (if available)
+            - **Producer**: Software used to generate the PDF
+            - **Creation Date**: When the document was first created
+            - **Modification Date**: When the document was last modified
+            - **Institutional Indicators**: Signs of official document origin
+            
+            **Why it matters:**
+            - Legitimate documents typically have complete metadata
+            - Official documents are usually created with specific software
+            - Timeline consistency (creation vs modification) indicates authenticity
+            - Missing metadata may indicate document manipulation or re-saving
+            
+            Compare this information with what you expect for a legitimate document.
+            """)
         
         metadata = analysis['metadata']['raw_data']
         dna_data = []
@@ -645,3 +1396,37 @@ else:
         
         with st.expander("📋 Complete Metadata Extraction"):
             st.json(analysis['metadata']['raw_data'])
+    
+    # Forensic Report Tab
+    with main_tab3:
+        st.markdown("## 📄 Comprehensive Forensic Report")
+        st.markdown("")
+        st.markdown("This report provides a comprehensive narrative summary of all forensic findings.")
+        st.markdown("")
+        
+        # Generate and display the report
+        report = generate_forensic_report(analysis)
+        formatted_report = format_report_for_display(analysis)
+        
+        # Show formatted version (better for reading)
+        st.markdown("### 📋 Report Summary")
+        st.markdown(formatted_report)
+        
+        st.markdown("---")
+        st.markdown("")
+        
+        # Show plain text version for download
+        with st.expander("📄 Plain Text Version (for download)", expanded=False):
+            st.markdown("```")
+            st.text(report)
+            st.markdown("```")
+        
+        # Download button
+        st.download_button(
+            label="📥 Download Report as Text File",
+            data=report,
+            file_name=f"forensic_report_{analysis['filename'].replace(' ', '_').replace('.', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            mime="text/plain",
+            use_container_width=True,
+            key="download_forensic_report"
+        )
