@@ -22,6 +22,7 @@ from detectors.signature_detector import SignatureDetector
 from detectors.embedded_object_detector import EmbeddedObjectDetector
 from detectors.confidence_scorer import ConfidenceScorer
 from detectors.ai_content_detector import AIContentDetector
+from policy_engine import PolicyEngine
 
 # Page configuration
 st.set_page_config(
@@ -41,6 +42,18 @@ if 'current_image' not in st.session_state:
     st.session_state.current_image = None
 if 'ela_heatmap' not in st.session_state:
     st.session_state.ela_heatmap = None
+if 'current_policy_result' not in st.session_state:
+    st.session_state.current_policy_result = None
+if 'current_doc_type_label' not in st.session_state:
+    st.session_state.current_doc_type_label = "Unknown Type"
+
+
+@st.cache_resource
+def get_policy_engine():
+    return PolicyEngine()
+
+
+policy_engine = get_policy_engine()
 
 
 def pdf_to_image(pdf_bytes):
@@ -225,15 +238,10 @@ def analyze_file(uploaded_file):
     return analysis
 
 
-def generate_forensic_report(analysis):
+def generate_forensic_report(analysis, policy_result=None, doc_type_label=None):
     """
     Generate a comprehensive narrative forensic report.
-    
-    Args:
-        analysis: Complete analysis dictionary
-        
-    Returns:
-        str: Formatted narrative report
+    Now supports Context-Aware Policy verdicts.
     """
     report_lines = []
     
@@ -245,6 +253,8 @@ def generate_forensic_report(analysis):
     report_lines.append(f"Document: {analysis['filename']}")
     report_lines.append(f"Analysis Date: {analysis['timestamp']}")
     report_lines.append(f"File Type: {analysis['file_type'].upper()}")
+    if doc_type_label:
+        report_lines.append(f"Document Class: {doc_type_label}")
     report_lines.append("")
     report_lines.append("=" * 80)
     report_lines.append("")
@@ -262,33 +272,48 @@ def generate_forensic_report(analysis):
     report_lines.append("-" * 80)
     report_lines.append("")
     
-    # Determine overall verdict
+    # Use Policy Engine Verdict if available
+    if policy_result:
+        verdict = policy_result['verdict']
+        reason = policy_result['reason']
+        action = policy_result['action']
+        
+        report_lines.append(f"POLICY APPLIED: {doc_type_label or 'Generic'}")
+        report_lines.append(f"AUTOMATED VERDICT: {verdict}")
+        report_lines.append(f"PRIMARY REASON: {reason}")
+        report_lines.append("")
+        
+        if verdict == 'RED':
+            report_lines.append("CONCLUSION: This document FAILS the specific validation policy for this")
+            report_lines.append("document type. It should NOT be accepted without verification.")
+            report_lines.append(f"Recommended Action: {action}")
+        elif verdict == 'AMBER':
+            report_lines.append("CONCLUSION: This document contains irregularities requiring MANUAL REVIEW.")
+            report_lines.append(f"Recommended Action: {action}")
+        else:
+            report_lines.append("CONCLUSION: This document PASSES the forensic checks for this document type.")
+            report_lines.append(f"Recommended Action: {action}")
+        report_lines.append("")
+    else:
+        # Fallback to old generic logic
+        if forgery_score >= 70 or trust_score < 40:
+            verdict_conclusion = "this document is likely not an original, unaltered document"
+        elif forgery_score >= 50 or trust_score < 60:
+            verdict_conclusion = "this document may not be an original, unaltered document"
+        elif forgery_score >= 30 or trust_score < 70:
+            verdict_conclusion = "this document requires further verification"
+        else:
+            verdict_conclusion = "this document appears to be authentic"
+        
+        report_lines.append(f"Based on the comprehensive forensic analysis, {verdict_conclusion}.")
+        report_lines.append("")
+    
+    # Metrics (ensure confidence_level/score set for Red Flags section below)
+    confidence_level = "Not Available"
+    confidence_score = 0
     if confidence_data:
         confidence_level = confidence_data.get('confidence_level', 'Unknown')
         confidence_score = confidence_data.get('confidence_score', 0)
-    else:
-        confidence_level = "Not Available"
-        confidence_score = 0
-    
-    # Generate verdict statement
-    if forgery_score >= 70 or trust_score < 40:
-        verdict_strength = "strong evidence"
-        verdict_conclusion = "this document is likely not an original, unaltered document"
-    elif forgery_score >= 50 or trust_score < 60:
-        verdict_strength = "significant technical indicators"
-        verdict_conclusion = "this document may not be an original, unaltered document"
-    elif forgery_score >= 30 or trust_score < 70:
-        verdict_strength = "some technical indicators"
-        verdict_conclusion = "this document requires further verification"
-    else:
-        verdict_strength = "minimal technical indicators"
-        verdict_conclusion = "this document appears to be authentic"
-    
-    report_lines.append(f"Based on the comprehensive forensic analysis, there are {verdict_strength} that")
-    report_lines.append(f"{verdict_conclusion}.")
-    report_lines.append("")
-    
-    if confidence_data:
         report_lines.append(f"Confidence Level: {confidence_level} ({confidence_score:.0f}% confidence)")
     report_lines.append(f"Forgery Probability Score: {forgery_score}/100")
     report_lines.append(f"Trust Score: {trust_score}/100")
@@ -487,15 +512,10 @@ def generate_forensic_report(analysis):
     return "\n".join(report_lines)
 
 
-def format_report_for_display(analysis):
+def format_report_for_display(analysis, policy_result=None, doc_type_label=None):
     """
     Format the forensic report for better Streamlit markdown display.
-    
-    Args:
-        analysis: Complete analysis dictionary
-        
-    Returns:
-        str: Formatted markdown report
+    Supports context-aware policy verdicts when policy_result is provided.
     """
     metadata = analysis['metadata']
     metadata_raw = metadata.get('raw_data', {})
@@ -512,6 +532,8 @@ def format_report_for_display(analysis):
     report_parts.append(f"**Document:** {analysis['filename']}  ")
     report_parts.append(f"**Analysis Date:** {analysis['timestamp']}  ")
     report_parts.append(f"**File Type:** {analysis['file_type'].upper()}")
+    if doc_type_label:
+        report_parts.append(f"**Document Class:** {doc_type_label}")
     report_parts.append("")
     report_parts.append("---")
     report_parts.append("")
@@ -527,23 +549,32 @@ def format_report_for_display(analysis):
         confidence_level = "Not Available"
         confidence_score = 0
     
-    # Generate verdict statement
-    if forgery_score >= 70 or trust_score < 40:
-        verdict_strength = "**strong evidence**"
-        verdict_conclusion = "this document is **likely not an original, unaltered document**"
-    elif forgery_score >= 50 or trust_score < 60:
-        verdict_strength = "**significant technical indicators**"
-        verdict_conclusion = "this document **may not be an original, unaltered document**"
-    elif forgery_score >= 30 or trust_score < 70:
-        verdict_strength = "**some technical indicators**"
-        verdict_conclusion = "this document **requires further verification**"
+    if policy_result:
+        verdict = policy_result.get('verdict', '')
+        reason = policy_result.get('reason', '')
+        action = policy_result.get('action', '')
+        report_parts.append(f"**Policy Applied:** {doc_type_label or 'Generic'}")
+        report_parts.append(f"**Verdict:** {verdict}")
+        report_parts.append(f"**Reason:** {reason}")
+        report_parts.append(f"**Recommended Action:** {action}")
+        report_parts.append("")
     else:
-        verdict_strength = "**minimal technical indicators**"
-        verdict_conclusion = "this document **appears to be authentic**"
-    
-    report_parts.append(f"Based on the comprehensive forensic analysis, there are {verdict_strength} that")
-    report_parts.append(f"{verdict_conclusion}.")
-    report_parts.append("")
+        # Generate verdict statement (generic)
+        if forgery_score >= 70 or trust_score < 40:
+            verdict_strength = "**strong evidence**"
+            verdict_conclusion = "this document is **likely not an original, unaltered document**"
+        elif forgery_score >= 50 or trust_score < 60:
+            verdict_strength = "**significant technical indicators**"
+            verdict_conclusion = "this document **may not be an original, unaltered document**"
+        elif forgery_score >= 30 or trust_score < 70:
+            verdict_strength = "**some technical indicators**"
+            verdict_conclusion = "this document **requires further verification**"
+        else:
+            verdict_strength = "**minimal technical indicators**"
+            verdict_conclusion = "this document **appears to be authentic**"
+        report_parts.append(f"Based on the comprehensive forensic analysis, there are {verdict_strength} that")
+        report_parts.append(f"{verdict_conclusion}.")
+        report_parts.append("")
     
     # Key Metrics
     report_parts.append("**Key Metrics:**")
@@ -725,14 +756,31 @@ def create_forgery_gauge(forgery_score):
 # Sidebar
 with st.sidebar:
     st.title('🔍 Case Files')
-    
+
+    # Document Type Selector
+    doc_type_label = st.selectbox(
+        "Document Type",
+        options=["Visa / UKVI Refusal", "University Letter", "Medical Note", "Other"],
+        index=0,
+        help="Select the type of document to apply specific forensic rules."
+    )
+
+    # Map label to config key
+    type_map = {
+        "Visa / UKVI Refusal": "visa_refusal",
+        "University Letter": "university_letter",
+        "Medical Note": "medical_letter",
+        "Other": "generic"
+    }
+    selected_doc_type = type_map[doc_type_label]
+
     # File upload
     uploaded_file = st.file_uploader(
         "Upload Document",
         type=['pdf', 'jpg', 'jpeg', 'png', 'tiff', 'tif'],
         help="Upload a PDF or image file for analysis"
     )
-    
+
     if uploaded_file is not None:
         # Analyze file
         with st.status("Scanning document layers...", expanded=True) as status:
@@ -747,13 +795,20 @@ with st.sidebar:
             st.write("Calculating confidence scores...")
             st.write("Generating forensic report...")
             analysis = analyze_file(uploaded_file)
+
+            st.write("Applying business policies...")
+            policy_result = policy_engine.evaluate(analysis, selected_doc_type)
+
+            st.session_state.current_policy_result = policy_result
+            st.session_state.current_doc_type_label = doc_type_label
+
             status.update(label="Analysis complete!", state="complete")
-            
+
             st.session_state.current_file = uploaded_file.name
             st.session_state.current_analysis = analysis
             st.session_state.current_image = analysis['display_image']
             st.session_state.ela_heatmap = analysis['ela_heatmap']
-            
+
             # Add to recent scans
             scan_entry = {
                 'filename': analysis['filename'],
@@ -787,7 +842,27 @@ if st.session_state.current_analysis is None:
     st.info('👈 Upload a document from the sidebar to begin analysis.')
 else:
     analysis = st.session_state.current_analysis
-    
+    policy_result = getattr(st.session_state, 'current_policy_result', None)
+    doc_type_label = getattr(st.session_state, 'current_doc_type_label', "Unknown Type")
+
+    # Context-Aware Verdict (Policy Engine)
+    st.divider()
+    if policy_result:
+        verdict = policy_result['verdict']
+        if verdict == 'RED':
+            st.error(f"### ⛔ RECOMMENDATION: {policy_result['action']}")
+            st.markdown(f"**Reason:** {policy_result['reason']}")
+        elif verdict == 'AMBER':
+            st.warning(f"### ✋ RECOMMENDATION: {policy_result['action']}")
+            st.markdown(f"**Reason:** {policy_result['reason']}")
+        else:
+            st.success(f"### ✅ RECOMMENDATION: {policy_result['action']}")
+            st.markdown(f"**Reason:** {policy_result['reason']}")
+
+        with st.expander(f"See Policy Rules applied for: {doc_type_label}"):
+            st.json(policy_result)
+    st.divider()
+
     # Create main tabs for Analysis Dashboard, Detailed Analysis, and Forensic Report
     main_tab1, main_tab2, main_tab3 = st.tabs(['📊 Analysis Dashboard', '🔍 Detailed Analysis', '📄 Forensic Report'])
     
@@ -1404,9 +1479,13 @@ else:
         st.markdown("This report provides a comprehensive narrative summary of all forensic findings.")
         st.markdown("")
         
-        # Generate and display the report
-        report = generate_forensic_report(analysis)
-        formatted_report = format_report_for_display(analysis)
+        # Retrieve Policy Result from Session State
+        policy_result = st.session_state.get('current_policy_result')
+        doc_type_label = st.session_state.get('current_doc_type_label')
+        
+        # Pass them to the report generators
+        report = generate_forensic_report(analysis, policy_result, doc_type_label)
+        formatted_report = format_report_for_display(analysis, policy_result, doc_type_label)
         
         # Show formatted version (better for reading)
         st.markdown("### 📋 Report Summary")
