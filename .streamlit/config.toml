@@ -1,0 +1,17 @@
+# Student Roost Enterprise – Document Fraud Detection
+# Theme: Purple / White / Grey (student housing branding)
+
+[theme]
+primaryColor = "#6B4EAA"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F7"
+textColor = "#2D2D2D"
+font = "sans serif"
+
+[theme.base]
+# Light theme base
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

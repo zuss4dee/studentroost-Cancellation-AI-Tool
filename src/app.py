@@ -27,8 +27,9 @@ from policy_engine import PolicyEngine
 # Page configuration
 st.set_page_config(
     layout='wide',
-    page_title='Document Fraud Detection',
-    page_icon='🔍'
+    page_title='Student Roost | Document Fraud Detection',
+    page_icon='🔍',
+    initial_sidebar_state='expanded'
 )
 
 # Initialize session state
@@ -46,6 +47,73 @@ if 'current_policy_result' not in st.session_state:
     st.session_state.current_policy_result = None
 if 'current_doc_type_label' not in st.session_state:
     st.session_state.current_doc_type_label = "Unknown Type"
+if 'case_reference_id' not in st.session_state:
+    st.session_state.case_reference_id = ""
+
+# Enterprise branding: custom CSS (Student Roost – Purple/White/Grey)
+st.markdown("""
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+    /* Global font */
+    html, body, [class*="css"] {
+        font-family: 'Inter', 'Roboto', sans-serif !important;
+    }
+    /* Hide Streamlit hamburger menu and footer */
+    #MainMenu { visibility: hidden; }
+    footer { visibility: hidden; }
+    /* Verdict stamps – official seal style */
+    .verdict-stamp {
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
+        margin: 0.75rem 0;
+        font-family: 'Inter', 'Roboto', sans-serif;
+        font-weight: 600;
+        text-align: left;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        border: 2px solid;
+        letter-spacing: 0.02em;
+    }
+    .verdict-stamp.red {
+        background: linear-gradient(135deg, #fff5f5 0%, #ffebeb 100%);
+        border-color: #c53030;
+        color: #742a2a;
+    }
+    .verdict-stamp.amber {
+        background: linear-gradient(135deg, #fffaf0 0%, #fff4e6 100%);
+        border-color: #c05621;
+        color: #744210;
+    }
+    .verdict-stamp.green {
+        background: linear-gradient(135deg, #f0fff4 0%, #e6ffed 100%);
+        border-color: #276749;
+        color: #22543d;
+    }
+    .verdict-stamp .stamp-label { font-size: 0.7rem; text-transform: uppercase; opacity: 0.85; margin-bottom: 0.25rem; }
+    .verdict-stamp .stamp-action { font-size: 1rem; margin-bottom: 0.35rem; }
+    .verdict-stamp .stamp-reason { font-size: 0.9rem; font-weight: 400; opacity: 0.95; }
+    /* Sidebar logo placeholder */
+    .sidebar-logo-placeholder {
+        background: linear-gradient(135deg, #6B4EAA 0%, #5a3d8a 100%);
+        color: white;
+        text-align: center;
+        padding: 1.25rem 0.75rem;
+        margin-bottom: 1rem;
+        border-radius: 8px;
+        font-family: 'Inter', sans-serif;
+        font-weight: 700;
+        font-size: 1.1rem;
+        letter-spacing: 0.03em;
+    }
+    /* Prominent upload area in sidebar */
+    [data-testid="stFileUploader"] {
+        border: 2px dashed #6B4EAA;
+        border-radius: 8px;
+        padding: 1rem;
+        background-color: #FAFAFC;
+    }
+    [data-testid="stFileUploader"] section { padding: 0.5rem 0; }
+</style>
+""", unsafe_allow_html=True)
 
 
 @st.cache_resource
@@ -755,7 +823,24 @@ def create_forgery_gauge(forgery_score):
 
 # Sidebar
 with st.sidebar:
-    st.title('🔍 Case Files')
+    # Student Roost logo placeholder (replace with image when asset available)
+    st.markdown("""
+        <div class="sidebar-logo-placeholder">
+            Student Roost<br>
+            <span style="font-size: 0.75rem; font-weight: 500; opacity: 0.9;">Evidence Verification</span>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Case Reference ID – links case to internal systems
+    st.text_input(
+        "Case Reference ID",
+        key="case_reference_id",
+        placeholder="e.g. SR-2024-XXXXX",
+        help="Enter the case or ticket reference for this verification."
+    )
+
+    st.divider()
+    st.subheader("Case Files")
 
     # Document Type Selector
     doc_type_label = st.selectbox(
@@ -774,11 +859,13 @@ with st.sidebar:
     }
     selected_doc_type = type_map[doc_type_label]
 
-    # File upload
+    # Prominent upload area
+    st.markdown("**Upload Document**")
     uploaded_file = st.file_uploader(
-        "Upload Document",
+        "Drag and drop or browse",
         type=['pdf', 'jpg', 'jpeg', 'png', 'tiff', 'tif'],
-        help="Upload a PDF or image file for analysis"
+        help="Upload a PDF or image file for forensic analysis",
+        label_visibility="collapsed"
     )
 
     if uploaded_file is not None:
@@ -834,9 +921,9 @@ with st.sidebar:
         st.info('No scans yet. Upload a file to begin.')
 
 
-# Main area
-st.title('📄 Document Fraud Detection System')
-st.caption('Forensic Analysis Dashboard')
+# Main area – Student Roost branding
+st.markdown("### Student Roost · Document Fraud Detection")
+st.caption("Forensic Analysis Dashboard · Evidence Verification")
 
 if st.session_state.current_analysis is None:
     st.info('👈 Upload a document from the sidebar to begin analysis.')
@@ -845,20 +932,21 @@ else:
     policy_result = getattr(st.session_state, 'current_policy_result', None)
     doc_type_label = getattr(st.session_state, 'current_doc_type_label', "Unknown Type")
 
-    # Context-Aware Verdict (Policy Engine)
+    # Context-Aware Verdict – stamp-style official seals
     st.divider()
     if policy_result:
         verdict = policy_result['verdict']
-        if verdict == 'RED':
-            st.error(f"### ⛔ RECOMMENDATION: {policy_result['action']}")
-            st.markdown(f"**Reason:** {policy_result['reason']}")
-        elif verdict == 'AMBER':
-            st.warning(f"### ✋ RECOMMENDATION: {policy_result['action']}")
-            st.markdown(f"**Reason:** {policy_result['reason']}")
-        else:
-            st.success(f"### ✅ RECOMMENDATION: {policy_result['action']}")
-            st.markdown(f"**Reason:** {policy_result['reason']}")
-
+        action = policy_result['action']
+        reason = policy_result['reason']
+        stamp_class = "red" if verdict == "RED" else "amber" if verdict == "AMBER" else "green"
+        stamp_label = "REJECT" if verdict == "RED" else "REVIEW" if verdict == "AMBER" else "ACCEPT"
+        st.markdown(f"""
+            <div class="verdict-stamp {stamp_class}">
+                <div class="stamp-label">Verdict · {stamp_label}</div>
+                <div class="stamp-action">{action}</div>
+                <div class="stamp-reason">{reason}</div>
+            </div>
+        """, unsafe_allow_html=True)
         with st.expander(f"See Policy Rules applied for: {doc_type_label}"):
             st.json(policy_result)
     st.divider()
