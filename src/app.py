@@ -27,9 +27,92 @@ from policy_engine import PolicyEngine
 # Page configuration
 st.set_page_config(
     layout='wide',
-    page_title='Document Fraud Detection',
+    page_title='Student Roost | Fraud Ops Dashboard',
     page_icon='🔍'
 )
+
+# Global CSS for modern enterprise dashboard styling
+st.markdown("""
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* Hide default Streamlit chrome */
+  #MainMenu { visibility: hidden; }
+  footer { visibility: hidden; }
+  header[data-testid="stHeader"] { display: none; }
+
+  /* Global background & typography */
+  html, body, [class*="css"] {
+    font-family: 'Inter', 'Roboto', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+    background-color: #F9FAFB !important;
+  }
+
+  /* Main content container */
+  .main .block-container {
+    padding-top: 1.5rem;
+    padding-bottom: 2rem;
+    background-color: #F9FAFB;
+  }
+
+  /* Sidebar styling */
+  section[data-testid="stSidebar"] {
+    background-color: #FFFFFF !important;
+    border-right: 1px solid #E5E7EB;
+  }
+  section[data-testid="stSidebar"] .block-container {
+    padding-top: 1.25rem;
+  }
+
+  /* Card utility class */
+  .stCard {
+    background-color: #FFFFFF;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.10);
+    padding: 20px;
+    border: 1px solid #E5E7EB;
+  }
+
+  /* Verdict badge & checklist styling */
+  .verdict-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.7rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .verdict-badge.red   { background-color:#FEE2E2; color:#B91C1C; }
+  .verdict-badge.amber { background-color:#FEF3C7; color:#92400E; }
+  .verdict-badge.green { background-color:#DCFCE7; color:#166534; }
+
+  .checklist-item {
+    display: flex;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    margin-top: 0.35rem;
+  }
+  .checklist-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    margin-top: 0.4rem;
+    background: #D1D5DB;
+  }
+
+  /* Recent scans styled as nav links */
+  .recent-scan-item {
+    padding: 0.4rem 0.15rem;
+    font-size: 0.9rem;
+    color: #6B7280;
+  }
+  .recent-scan-item strong {
+    color: #111827;
+  }
+  .recent-scan-meta {
+    font-size: 0.75rem;
+    color: #9CA3AF;
+  }
+</style>
+""", unsafe_allow_html=True)
 
 # Initialize session state
 if 'recent_scans' not in st.session_state:
@@ -755,7 +838,10 @@ def create_forgery_gauge(forgery_score):
 
 # Sidebar
 with st.sidebar:
-    st.title('🔍 Case Files')
+    # Workspace header
+    st.markdown("**❖ Student Roost | Fraud Ops**")
+    st.caption("Internal case review workspace")
+    st.markdown("---")
 
     # Document Type Selector
     doc_type_label = st.selectbox(
@@ -774,15 +860,16 @@ with st.sidebar:
     }
     selected_doc_type = type_map[doc_type_label]
 
-    # File upload
+    # File upload – simplified, clean label
+    st.markdown("#### Upload document")
     uploaded_file = st.file_uploader(
-        "Upload Document",
+        "Upload document",
         type=['pdf', 'jpg', 'jpeg', 'png', 'tiff', 'tif'],
         help="Upload a PDF or image file for analysis"
     )
 
     if uploaded_file is not None:
-        # Analyze file
+        # Analyze file (logic unchanged)
         with st.status("Scanning document layers...", expanded=True) as status:
             st.write("Extracting metadata...")
             if uploaded_file.name.lower().endswith('.pdf'):
@@ -819,24 +906,28 @@ with st.sidebar:
             # Keep only last 10 scans
             st.session_state.recent_scans = st.session_state.recent_scans[:10]
     
-    # Recent scans
-    st.divider()
-    st.subheader('Recent Scans')
+    # Recent scans styled as nav items
+    st.markdown("#### Recent scans")
     
     if st.session_state.recent_scans:
-        for i, scan in enumerate(st.session_state.recent_scans):
+        for scan in st.session_state.recent_scans:
             risk_color = "🟢" if scan['risk_score'] < 30 else "🟡" if scan['risk_score'] < 70 else "🔴"
-            st.write(f"{risk_color} **{scan['filename']}**")
-            st.caption(f"Forgery Probability: {scan['risk_score']}/100 | {scan['timestamp']}")
-            if i < len(st.session_state.recent_scans) - 1:
-                st.divider()
+            st.markdown(
+                f"""
+                <div class="recent-scan-item">
+                    {risk_color} <strong>{scan['filename']}</strong>
+                    <div class="recent-scan-meta">Forgery {scan['risk_score']}/100 · {scan['timestamp']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
     else:
-        st.info('No scans yet. Upload a file to begin.')
+        st.caption('No scans yet. Upload a file to begin.')
 
 
 # Main area
-st.title('📄 Document Fraud Detection System')
-st.caption('Forensic Analysis Dashboard')
+st.markdown("# Case File Analysis 👋")
+st.caption("Reviewing uploaded documents for forensic anomalies.")
 
 if st.session_state.current_analysis is None:
     st.info('👈 Upload a document from the sidebar to begin analysis.')
@@ -844,24 +935,6 @@ else:
     analysis = st.session_state.current_analysis
     policy_result = getattr(st.session_state, 'current_policy_result', None)
     doc_type_label = getattr(st.session_state, 'current_doc_type_label', "Unknown Type")
-
-    # Context-Aware Verdict (Policy Engine)
-    st.divider()
-    if policy_result:
-        verdict = policy_result['verdict']
-        if verdict == 'RED':
-            st.error(f"### ⛔ RECOMMENDATION: {policy_result['action']}")
-            st.markdown(f"**Reason:** {policy_result['reason']}")
-        elif verdict == 'AMBER':
-            st.warning(f"### ✋ RECOMMENDATION: {policy_result['action']}")
-            st.markdown(f"**Reason:** {policy_result['reason']}")
-        else:
-            st.success(f"### ✅ RECOMMENDATION: {policy_result['action']}")
-            st.markdown(f"**Reason:** {policy_result['reason']}")
-
-        with st.expander(f"See Policy Rules applied for: {doc_type_label}"):
-            st.json(policy_result)
-    st.divider()
 
     # Create main tabs for Analysis Dashboard, Detailed Analysis, and Forensic Report
     main_tab1, main_tab2, main_tab3 = st.tabs(['📊 Analysis Dashboard', '🔍 Detailed Analysis', '📄 Forensic Report'])
@@ -945,9 +1018,39 @@ else:
             else:
                 st.info('No metadata extracted from document.')
     
-    # Column 2: Verdict
+    # Column 2: Verdict & summary card
     with col2:
         st.subheader('⚖️ Forensic Verdict')
+
+        # Policy-aware verdict badge and action items
+        if policy_result:
+            verdict = policy_result['verdict']
+            action = policy_result['action']
+            reason = policy_result['reason']
+            badge_class = "red" if verdict == "RED" else "amber" if verdict == "AMBER" else "green"
+            st.markdown(
+                f"""
+                <span class="verdict-badge {badge_class}">
+                    {verdict} · {action}
+                </span>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown("**Action items**")
+            st.markdown(
+                f"""
+                <div class="checklist-item">
+                    <div class="checklist-dot"></div>
+                    <div>Primary reason: {reason}</div>
+                </div>
+                <div class="checklist-item">
+                    <div class="checklist-dot"></div>
+                    <div>Next step: {action}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
         with st.expander("ℹ️ Understanding Your Results", expanded=False):
             st.markdown("""
             **Forensic Verdict** provides a comprehensive assessment of document authenticity.
@@ -967,25 +1070,26 @@ else:
             Always combine automated analysis with manual document review for critical decisions.
             """)
         
-        # Confidence Score (if available for PDFs)
-        if analysis.get('confidence') and analysis['file_type'] == 'pdf':
-            confidence_data = analysis['confidence']
+        # Core metrics row inside the Verdict card
+        forgery_score = analysis['metadata']['risk_score']
+        trust_score = analysis['metadata']['trust_score']
+        confidence_data = analysis.get('confidence') if analysis.get('confidence') and analysis['file_type'] == 'pdf' else None
+
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            if confidence_data:
+                st.metric("Confidence", f"{confidence_data['confidence_score']:.0f}%")
+            else:
+                st.metric("Confidence", "N/A")
+        with m2:
+            st.metric("Forgery Score", f"{forgery_score}/100")
+        with m3:
+            st.metric("Trust Score", f"{trust_score}/100")
+
+        # Confidence Score detail
+        if confidence_data:
             confidence_score = confidence_data['confidence_score']
             confidence_level = confidence_data['confidence_level']
-            
-            # Display confidence with color coding
-            if confidence_score >= 90:
-                conf_color = "🔴"
-                conf_bg = "background-color: #ffebee; padding: 10px; border-radius: 5px;"
-            elif confidence_score >= 70:
-                conf_color = "🟠"
-                conf_bg = "background-color: #fff3e0; padding: 10px; border-radius: 5px;"
-            elif confidence_score >= 50:
-                conf_color = "🟡"
-                conf_bg = "background-color: #fffde7; padding: 10px; border-radius: 5px;"
-            else:
-                conf_color = "🟢"
-                conf_bg = "background-color: #e8f5e9; padding: 10px; border-radius: 5px;"
             
             st.markdown(f"### 🎯 Confidence Score: {confidence_score:.0f}%")
             with st.expander("ℹ️ What is Confidence Score?", expanded=False):
@@ -999,7 +1103,7 @@ else:
                 
                 This score combines findings from metadata, structure, content, pixel, and signature analysis.
                 """)
-            st.markdown(f"**{conf_color} {confidence_level}**")
+            st.markdown(f"**{confidence_level}**")
             st.info(confidence_data['recommendation'])
             
             # Confidence breakdown
@@ -1015,9 +1119,6 @@ else:
                 st.markdown(f"- Signature: {breakdown['signature_indicators']}")
         
         # Overall Forgery Probability
-        forgery_score = analysis['metadata']['risk_score']
-        trust_score = analysis['metadata']['trust_score']
-        
         st.markdown("#### Forgery Probability")
         with st.expander("ℹ️ What is Forgery Probability?", expanded=False):
             st.markdown("""
@@ -1051,9 +1152,9 @@ else:
             
             A high trust score means the document's metadata suggests authenticity, while a low score indicates potential fraud.
             """)
-        trust_color = "🟢" if trust_score >= 70 else "🟡" if trust_score >= 40 else "🔴"
-        st.metric("Trust Score", f"{trust_score}/100", delta=None)
-        st.caption(f"{trust_color} {'High Trust' if trust_score >= 70 else 'Medium Trust' if trust_score >= 40 else 'Low Trust'}")
+        trust_label = 'High Trust' if trust_score >= 70 else 'Medium Trust' if trust_score >= 40 else 'Low Trust'
+        trust_icon = "🟢" if trust_score >= 70 else "🟡" if trust_score >= 40 else "🔴"
+        st.markdown(f"**{trust_icon} {trust_label} ({trust_score}/100)**")
         
         st.divider()
         
