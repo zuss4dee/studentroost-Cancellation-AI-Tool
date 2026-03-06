@@ -111,6 +111,121 @@ _GLOBAL_CSS = """
     font-size: 0.75rem;
     color: #9CA3AF;
   }
+
+  /* Landing hero */
+  .landing-hero {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 2.25rem 2.75rem 2.75rem;
+    border-radius: 32px;
+    background: radial-gradient(circle at 0% 0%, #a855f7 0, #7c3aed 30%, #4c1d95 75%, #1e1b4b 100%);
+    color: #F9FAFB;
+    position: relative;
+    overflow: hidden;
+  }
+  .landing-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.8rem;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.4);
+    font-size: 0.75rem;
+    font-weight: 500;
+    margin-bottom: 0.9rem;
+  }
+  .landing-pill-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: #22c55e;
+    box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.25);
+  }
+  .landing-title {
+    font-size: 2.4rem;
+    line-height: 1.1;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    margin-bottom: 0.6rem;
+  }
+  .landing-subtitle {
+    font-size: 0.98rem;
+    max-width: 540px;
+    color: #E5E7EB;
+    margin-bottom: 1.6rem;
+  }
+  .landing-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-bottom: 2.1rem;
+  }
+  .btn-primary {
+    padding: 0.7rem 1.4rem;
+    border-radius: 999px;
+    background: #F9FAFB;
+    color: #4f46e5;
+    font-weight: 600;
+    font-size: 0.95rem;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);
+  }
+  .btn-secondary {
+    padding: 0.7rem 1.4rem;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.35);
+    color: #E5E7EB;
+    font-weight: 500;
+    font-size: 0.95rem;
+    border: 1px solid rgba(148, 163, 184, 0.4);
+    cursor: pointer;
+  }
+  .landing-feature-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1.25rem;
+  }
+  .landing-feature-card {
+    background: #F9FAFB;
+    border-radius: 20px;
+    padding: 1.25rem 1.3rem;
+    box-shadow: 0 16px 40px rgba(15, 23, 42, 0.15);
+    color: #0f172a;
+  }
+  .landing-feature-label {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 999px;
+    margin-bottom: 0.9rem;
+    font-size: 1.15rem;
+  }
+  .landing-feature-label.blue { background: rgba(59, 130, 246, 0.12); color: #1d4ed8; }
+  .landing-feature-label.purple { background: rgba(147, 51, 234, 0.12); color: #7e22ce; }
+  .landing-feature-label.red { background: rgba(239, 68, 68, 0.12); color: #b91c1c; }
+  .landing-feature-title {
+    font-size: 0.98rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+  .landing-feature-body {
+    font-size: 0.85rem;
+    color: #4b5563;
+  }
+  .landing-footer {
+    font-size: 0.72rem;
+    color: #9CA3AF;
+    text-align: center;
+    margin-top: 1.75rem;
+  }
+  @media (max-width: 900px) {
+    .landing-hero { padding: 1.75rem 1.5rem 2rem; border-radius: 24px; }
+    .landing-title { font-size: 1.8rem; }
+    .landing-feature-row { grid-template-columns: 1fr; }
+  }
 </style>
 """
 
@@ -928,11 +1043,61 @@ with st.sidebar:
 
 
 # Main area
-st.markdown("# Case File Analysis 👋")
-st.caption("Reviewing uploaded documents for forensic anomalies.")
+st.markdown("# ")
+st.caption("")
 
 if st.session_state.current_analysis is None:
-    st.info('👈 Upload a document from the sidebar to begin analysis.')
+    st.markdown(
+        """
+        <div class="landing-hero">
+          <div class="landing-pill">
+            <span class="landing-pill-dot"></span>
+            <span>System online · v1.2.0 active</span>
+          </div>
+          <h1 class="landing-title">
+            Automated Document<br/>Forensics Engine
+          </h1>
+          <p class="landing-subtitle">
+            Instantly detect metadata anomalies, pixel manipulation, and AI‑generated text
+            in uploaded compliance documents.
+          </p>
+          <div class="landing-buttons">
+            <button class="btn-primary">Start new scan</button>
+            <button class="btn-secondary">View demo</button>
+          </div>
+          <div class="landing-feature-row">
+            <div class="landing-feature-card">
+              <div class="landing-feature-label blue">🧬</div>
+              <div class="landing-feature-title">File DNA &amp; metadata</div>
+              <div class="landing-feature-body">
+                Deep analysis of EXIF data, creation dates, and modification history
+                to identify inconsistencies in document origin.
+              </div>
+            </div>
+            <div class="landing-feature-card">
+              <div class="landing-feature-label purple">📐</div>
+              <div class="landing-feature-title">Pixel &amp; layout analysis</div>
+              <div class="landing-feature-body">
+                Error Level Analysis (ELA) and layout heuristics to spot copy‑paste
+                artifacts, font mismatches, and subtle manipulation.
+              </div>
+            </div>
+            <div class="landing-feature-card">
+              <div class="landing-feature-label red">🤖</div>
+              <div class="landing-feature-title">AI content detection</div>
+              <div class="landing-feature-body">
+                Advanced NLP models trained to distinguish human‑written narratives
+                from LLM‑generated fabrication in personal statements.
+              </div>
+            </div>
+          </div>
+          <div class="landing-footer">
+            © 2024 Student Roost Operations · Internal use only
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 else:
     analysis = st.session_state.current_analysis
     policy_result = getattr(st.session_state, 'current_policy_result', None)
