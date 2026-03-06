@@ -23,6 +23,7 @@ from detectors.embedded_object_detector import EmbeddedObjectDetector
 from detectors.confidence_scorer import ConfidenceScorer
 from detectors.ai_content_detector import AIContentDetector
 from policy_engine import PolicyEngine
+from streamlit.components.v1 import html as st_html
 
 # Page configuration
 st.set_page_config(
@@ -31,14 +32,13 @@ st.set_page_config(
     page_icon='🔍'
 )
 
-# Global CSS for modern enterprise dashboard styling
-st.markdown("""
+# Global CSS for modern enterprise dashboard styling (injected via components to avoid rendering as text)
+_GLOBAL_CSS = """
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   /* Hide default Streamlit chrome */
   #MainMenu { visibility: hidden; }
   footer { visibility: hidden; }
-  header[data-testid="stHeader"] { display: none; }
 
   /* Global background & typography */
   html, body, [class*="css"] {
@@ -65,8 +65,8 @@ st.markdown("""
   /* Card utility class */
   .stCard {
     background-color: #FFFFFF;
-    border-radius: 12px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.10);
+    border-radius: 16px;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
     padding: 20px;
     border: 1px solid #E5E7EB;
   }
@@ -112,7 +112,9 @@ st.markdown("""
     color: #9CA3AF;
   }
 </style>
-""", unsafe_allow_html=True)
+"""
+
+st_html(_GLOBAL_CSS, height=0)
 
 # Initialize session state
 if 'recent_scans' not in st.session_state:
@@ -939,639 +941,429 @@ else:
     # Create main tabs for Analysis Dashboard, Detailed Analysis, and Forensic Report
     main_tab1, main_tab2, main_tab3 = st.tabs(['📊 Analysis Dashboard', '🔍 Detailed Analysis', '📄 Forensic Report'])
     
+    # -------------------------------------------------------------------------
+    # 📊 Analysis Dashboard – minimal triage view for internal + external users
+    # -------------------------------------------------------------------------
     with main_tab1:
-        # Two-column layout
-        col1, col2 = st.columns([1.2, 1])
-    
-    # Column 1: Viewer
-    with col1:
-        st.subheader('📋 Document Viewer')
-        
-        # Tabs
-        tab1, tab2, tab3 = st.tabs(['Original', 'ELA Heatmap', 'Metadata View'])
-        
-        with tab1:
-            if analysis['file_type'] == 'pdf':
-                st.image(analysis['display_image'], caption=analysis['filename'], use_container_width=True)
-            else:
-                st.image(analysis['display_image'], caption=analysis['filename'], use_container_width=True)
-        
-        with tab2:
-            if st.session_state.ela_heatmap:
-                # PDF-specific warning
-                if analysis['file_type'] == 'pdf':
-                    st.warning("""
-                    ⚠️ **PDF Text Edit Limitation**: ELA analysis is most effective for raster image manipulation (JPEG, PNG). 
-                    For PDFs, ELA analyzes the rendered image output, which may not detect text-only edits since PDFs are vector-based documents. 
-                    **Metadata analysis is more reliable for detecting PDF text edits** - check the Forensic Signals and File DNA sections for editing software detection.
-                    """)
-                
-                # Instructions section
-                with st.expander("📖 How Error Level Analysis (ELA) Works", expanded=False):
-                    st.markdown("""
-                    **Error Level Analysis (ELA)** is a forensic technique used to detect digital image manipulation by identifying compression inconsistencies.
-                    
-                    **How it works:**
-                    1. **Re-compression**: The original image is saved at 90% JPEG quality in memory
-                    2. **Difference Calculation**: The system calculates the absolute difference between the original and re-compressed image
-                    3. **Enhancement**: The difference is enhanced by 20x to make subtle variations visible
-                    4. **Visualization**: The result is displayed as a heatmap where brightness indicates error levels
-                    
-                    **Interpreting the Heatmap:**
-                    - **Dark regions** (low brightness): Areas with consistent compression - likely unedited
-                    - **Bright regions** (high brightness): Areas with compression inconsistencies - potential signs of:
-                      - Digital editing or manipulation
-                      - Copy-paste operations
-                      - Image compositing
-                      - Selective quality adjustments
-                      - Compression artifacts from editing tools
-                    
-                    **Important Notes:**
-                    - **PDF Limitations**: ELA is less effective for text-only edits in PDFs. PDFs are vector-based, so text changes don't create the same compression artifacts as image edits. Metadata analysis (software detection, timestamps) is more reliable for PDF text manipulation.
-                    - Bright areas don't always mean forgery - they can also indicate:
-                      - Natural compression variations
-                      - Text overlays or watermarks
-                      - Different compression levels in source images
-                    - Always combine ELA findings with metadata analysis for accurate assessment
-                    - Professional forensic analysis requires multiple techniques
-                    """)
-                
-                st.image(
-                    st.session_state.ela_heatmap,
-                    caption='Error Level Analysis (ELA) Heatmap - Bright regions indicate potential digital manipulation',
-                    use_container_width=True
-                )
-                st.caption('💡 **Forensic Note:** Enhanced brightness regions in the ELA heatmap may indicate areas of digital alteration or compression artifacts.')
-            else:
-                st.info('ELA heatmap not available.')
-        
-        with tab3:
-            st.subheader('Metadata Extraction')
-            if analysis['metadata']['raw_data']:
-                # Display metadata in expandable sections
-                for key, value in analysis['metadata']['raw_data'].items():
-                    if isinstance(value, dict):
-                        with st.expander(f"📌 {key.replace('_', ' ').title()}"):
-                            st.json(value)
-                    else:
-                        st.text(f"**{key.replace('_', ' ').title()}:** {value}")
-            else:
-                st.info('No metadata extracted from document.')
-    
-    # Column 2: Verdict & summary card
-    with col2:
-        st.subheader('⚖️ Forensic Verdict')
-
-        # Policy-aware verdict badge and action items
-        if policy_result:
-            verdict = policy_result['verdict']
-            action = policy_result['action']
-            reason = policy_result['reason']
-            badge_class = "red" if verdict == "RED" else "amber" if verdict == "AMBER" else "green"
-            st.markdown(
-                f"""
-                <span class="verdict-badge {badge_class}">
-                    {verdict} · {action}
-                </span>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown("**Action items**")
-            st.markdown(
-                f"""
-                <div class="checklist-item">
-                    <div class="checklist-dot"></div>
-                    <div>Primary reason: {reason}</div>
-                </div>
-                <div class="checklist-item">
-                    <div class="checklist-dot"></div>
-                    <div>Next step: {action}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with st.expander("ℹ️ Understanding Your Results", expanded=False):
-            st.markdown("""
-            **Forensic Verdict** provides a comprehensive assessment of document authenticity.
-            
-            **Key Components:**
-            1. **Confidence Score**: How certain the system is about its assessment
-            2. **Forgery Probability**: Likelihood the document was manipulated (0-100)
-            3. **Trust Score**: How trustworthy the document metadata appears (0-100)
-            4. **Forensic Signals**: Specific anomalies and issues detected
-            5. **File DNA**: Extracted metadata and document properties
-            
-            **Interpreting Scores:**
-            - **High Forgery Probability + Low Trust Score** = Strong evidence of fraud
-            - **Low Forgery Probability + High Trust Score** = Document appears authentic
-            - **Mixed scores** = Requires manual review and verification
-            
-            Always combine automated analysis with manual document review for critical decisions.
-            """)
-        
-        # Core metrics row inside the Verdict card
+        # Top triage strip: verdict + key scores
         forgery_score = analysis['metadata']['risk_score']
         trust_score = analysis['metadata']['trust_score']
         confidence_data = analysis.get('confidence') if analysis.get('confidence') and analysis['file_type'] == 'pdf' else None
 
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            if confidence_data:
-                st.metric("Confidence", f"{confidence_data['confidence_score']:.0f}%")
-            else:
-                st.metric("Confidence", "N/A")
-        with m2:
-            st.metric("Forgery Score", f"{forgery_score}/100")
-        with m3:
-            st.metric("Trust Score", f"{trust_score}/100")
+        st.markdown('<div class="stCard">', unsafe_allow_html=True)
+        top_left, top_mid, top_right = st.columns([2, 1, 1])
 
-        # Confidence Score detail
-        if confidence_data:
-            confidence_score = confidence_data['confidence_score']
-            confidence_level = confidence_data['confidence_level']
-            
-            st.markdown(f"### 🎯 Confidence Score: {confidence_score:.0f}%")
-            with st.expander("ℹ️ What is Confidence Score?", expanded=False):
-                st.markdown("""
-                **Confidence Score** measures how certain the system is about its fraud detection assessment.
-                
-                - **90-100% (Definitive Fraud)**: Multiple strong indicators detected. High certainty of document manipulation.
-                - **70-89% (High Suspicion)**: Several suspicious indicators found. Document likely fraudulent.
-                - **50-69% (Moderate Suspicion)**: Some anomalies detected. Requires further investigation.
-                - **0-49% (Low Suspicion)**: Few or weak indicators. Document appears legitimate.
-                
-                This score combines findings from metadata, structure, content, pixel, and signature analysis.
-                """)
-            st.markdown(f"**{confidence_level}**")
-            st.info(confidence_data['recommendation'])
-            
-            # Confidence breakdown
-            with st.expander("📊 Confidence Breakdown", expanded=False):
-                breakdown = confidence_data['indicator_breakdown']
-                st.markdown(f"**Total Indicators:** {confidence_data['indicator_count']}")
-                st.markdown(f"**Unique Categories:** {confidence_data['unique_categories']}")
-                st.markdown("**By Category:**")
-                st.markdown(f"- Metadata: {breakdown['metadata_indicators']}")
-                st.markdown(f"- Structure: {breakdown['structure_indicators']}")
-                st.markdown(f"- Content: {breakdown['content_indicators']}")
-                st.markdown(f"- Pixel: {breakdown['pixel_indicators']}")
-                st.markdown(f"- Signature: {breakdown['signature_indicators']}")
-        
-        # Overall Forgery Probability
-        st.markdown("#### Forgery Probability")
-        with st.expander("ℹ️ What is Forgery Probability?", expanded=False):
-            st.markdown("""
-            **Forgery Probability** (0-100) indicates the likelihood that the document has been manipulated or forged.
-            
-            - **0-30 (Green)**: Low risk - Document appears authentic
-            - **30-70 (Orange)**: Moderate risk - Some suspicious indicators found
-            - **70-100 (Red)**: High risk - Strong evidence of manipulation or forgery
-            
-            This score is calculated from detected anomalies across all forensic analysis methods.
-            """)
-        forgery_gauge = create_forgery_gauge(forgery_score)
-        st.plotly_chart(forgery_gauge, use_container_width=True)
-        
-        # Trust Score
-        st.markdown("#### Trust Score")
-        with st.expander("ℹ️ What is Trust Score?", expanded=False):
-            st.markdown("""
-            **Trust Score** (0-100) measures how trustworthy the document appears based on metadata and provenance.
-            
-            - **70-100 (High Trust)**: Document metadata is complete and consistent. Created with trusted software. No manipulation indicators.
-            - **40-69 (Medium Trust)**: Some metadata missing or inconsistencies found. May be legitimate but requires verification.
-            - **0-39 (Low Trust)**: Significant metadata issues, suspicious software detected, or manipulation indicators present.
-            
-            **Key Factors:**
-            - Presence of author/creator metadata
-            - Software used to create the document
-            - Timeline consistency (creation vs modification dates)
-            - Institutional indicators (for official documents)
-            - Detection of manipulation software (Photoshop, etc.)
-            
-            A high trust score means the document's metadata suggests authenticity, while a low score indicates potential fraud.
-            """)
-        trust_label = 'High Trust' if trust_score >= 70 else 'Medium Trust' if trust_score >= 40 else 'Low Trust'
-        trust_icon = "🟢" if trust_score >= 70 else "🟡" if trust_score >= 40 else "🔴"
-        st.markdown(f"**{trust_icon} {trust_label} ({trust_score}/100)**")
-        
-        st.divider()
-        
-        # Summary of key findings (keep minimal on dashboard)
-        st.markdown("### 🚨 Key Findings Summary")
-        all_flags = []
-        all_flags.extend(analysis['metadata']['flags'])
-        all_flags.extend(analysis['noise']['flags'])
-        
-        # Add AI content detection flags if available
-        if analysis.get('ai_content') and analysis['ai_content'].get('is_ai_generated'):
-            ai_content = analysis['ai_content']
-            confidence = ai_content.get('confidence', 0)
-            all_flags.append(f"⚠️ AI-Generated Content Detected (Confidence: {confidence:.1f}%)")
-        
-        # Add correlation flag if detected
-        if analysis.get('correlation_flag'):
-            all_flags.append(analysis['correlation_flag'])
-        
-        # Show only top 5 most critical flags on dashboard
-        critical_flags = [f for f in all_flags if any(keyword in f for keyword in ['Digital Manipulation', 'Time gap', 'AI-Generated', 'Missing Author', 'suspicious'])]
-        if critical_flags:
-            st.warning(f"**{len(critical_flags)} critical issue(s) detected.** See 'Detailed Analysis' tab for complete list.")
-            for flag in critical_flags[:3]:  # Show top 3
-                st.markdown(f"⚠️ {flag}")
-            if len(critical_flags) > 3:
-                st.caption(f"*+ {len(critical_flags) - 3} more issues. See Detailed Analysis tab.*")
-        elif all_flags:
-            st.info(f"**{len(all_flags)} indicator(s) found.** See 'Detailed Analysis' tab for details.")
-        else:
-            st.success("✅ No suspicious indicators detected")
+        with top_left:
+            st.subheader("⚖️ Forensic verdict")
+
+            if policy_result:
+                verdict = policy_result['verdict']
+                action = policy_result['action']
+                reason = policy_result['reason']
+                badge_class = "red" if verdict == "RED" else "amber" if verdict == "AMBER" else "green"
+
+                st.markdown(
+                    f"""
+                    <span class="verdict-badge {badge_class}">
+                        {verdict} · {action}
+                    </span>
+                    """,
+                    unsafe_allow_html=True,
+                )
+                st.markdown(f"**Reason:** {reason}")
+            else:
+                # Generic fallback if no policy result
+                verdict_text = "Document appears authentic"
+                if forgery_score >= 70 or trust_score < 40:
+                    verdict_text = "High risk of forgery"
+                elif forgery_score >= 40 or trust_score < 60:
+                    verdict_text = "Moderate anomalies detected"
+                st.markdown(f"**Verdict:** {verdict_text}")
+
+            if confidence_data:
+                st.caption(f"Confidence: {confidence_data['confidence_score']:.0f}% · {confidence_data['confidence_level']}")
+
+        with top_mid:
+            st.metric("Forgery score", f"{forgery_score}/100")
+
+        with top_right:
+            st.metric("Trust score", f"{trust_score}/100")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+        st.write("")
+
+        # Second row: viewer (left) + key findings (right)
+        col1, col2 = st.columns([1.4, 1])
+
+        # Left: minimal document viewer
+        with col1:
+            st.markdown('<div class="stCard">', unsafe_allow_html=True)
+            st.subheader("📋 Document viewer")
+
+            viewer_tab1, viewer_tab2 = st.tabs(["Original", "ELA heatmap"])
+
+            with viewer_tab1:
+                st.image(
+                    analysis['display_image'],
+                    caption=analysis['filename'],
+                    use_container_width=True,
+                )
+
+            with viewer_tab2:
+                if st.session_state.ela_heatmap is not None:
+                    st.image(
+                        st.session_state.ela_heatmap,
+                        caption="Error Level Analysis (ELA) heatmap",
+                        use_container_width=True,
+                    )
+                    st.caption("Bright regions may indicate digital manipulation. For details, see the Detailed Analysis tab.")
+                else:
+                    st.info("ELA heatmap not available for this document.")
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # Right: short key‑findings summary
+        with col2:
+            st.markdown('<div class="stCard">', unsafe_allow_html=True)
+            st.subheader("🚨 Key findings")
+
+            all_flags = []
+            all_flags.extend(analysis['metadata']['flags'])
+            all_flags.extend(analysis['noise']['flags'])
+
+            # AI content flag (if present)
+            if analysis.get('ai_content') and analysis['ai_content'].get('is_ai_generated'):
+                ai_content = analysis['ai_content']
+                ai_conf = ai_content.get('confidence', 0)
+                all_flags.append(f"AI‑generated content detected (confidence {ai_conf:.1f}%)")
+
+            # Correlation flag (if present)
+            if analysis.get('correlation_flag'):
+                all_flags.append(analysis['correlation_flag'])
+
+            # Filter to most critical issues
+            critical_keywords = ["Digital Manipulation", "Time gap", "AI-Generated", "Missing Author", "suspicious"]
+            critical_flags = [
+                f for f in all_flags
+                if any(k.lower() in f.lower() for k in critical_keywords)
+            ]
+            display_flags = critical_flags or all_flags
+
+            if display_flags:
+                for flag in display_flags[:3]:
+                    st.markdown(f"- {flag}")
+
+                remaining = max(0, len(display_flags) - 3)
+                if remaining > 0:
+                    st.caption(f"+ {remaining} more signals. See the Detailed Analysis tab for full list.")
+            else:
+                st.success("No suspicious findings in top‑level checks.")
+
+            st.markdown('</div>', unsafe_allow_html=True)
     
-    # Detailed Analysis Tab
+    # -------------------------------------------------------------------------
+    # 🔍 Detailed Analysis – second‑level drill‑down
+    # -------------------------------------------------------------------------
     with main_tab2:
-        st.markdown("## 🔍 Detailed Analysis")
-        st.markdown("Complete forensic analysis results and detailed findings.")
+        st.markdown("## 🔍 Detailed analysis")
+        st.caption("Deeper forensic signals, AI patterns, metadata, and detector outputs.")
         st.markdown("")
-        
-        # Forensic Signals
-        st.markdown("### 🚨 Forensic Signals")
-        with st.expander("ℹ️ What are Forensic Signals?", expanded=False):
-            st.markdown("""
-            **Forensic Signals** are specific anomalies and indicators detected during document analysis.
-            
-            **Signal Types:**
-            - **🔴 Red Flags**: Strong evidence of manipulation (Photoshop detection, timeline anomalies)
-            - **🟠 Orange Warnings**: Suspicious indicators requiring investigation
-            - **🟡 Yellow Alerts**: Minor anomalies that may be legitimate
-            - **ℹ️ Info**: Contextual information about the document
-            
-            **Common Signals:**
-            - Time gap anomalies (document modified long after creation)
-            - Suspicious software detection (Photoshop, GIMP, etc.)
-            - Missing metadata (author, creator fields)
-            - AI-generated content indicators
-            - Pixel-level manipulation (ELA anomalies)
-            - PDF structure inconsistencies
-            
-            Review each signal to understand what was detected and why it's significant.
-            """)
-        
-        # Collect all flags
-        all_flags = []
-        all_flags.extend(analysis['metadata']['flags'])
-        all_flags.extend(analysis['noise']['flags'])
-        
-        # Add AI content detection flags if available
-        if analysis.get('ai_content') and analysis['ai_content'].get('is_ai_generated'):
-            ai_content = analysis['ai_content']
-            confidence = ai_content.get('confidence', 0)
-            all_flags.append(f"⚠️ AI-Generated Content Detected (Confidence: {confidence:.1f}%)")
-            # Add individual AI indicators
-            for indicator in ai_content.get('indicators', []):
-                all_flags.append(f"⚠️ {indicator}")
-        
-        # Add correlation flag if detected
-        if analysis.get('correlation_flag'):
-            all_flags.append(analysis['correlation_flag'])
-        
-        # Add flags from PDF-specific detectors if available
-        if analysis['file_type'] == 'pdf' and analysis.get('all_results'):
-            all_results = analysis['all_results']
-            if 'structure' in all_results:
-                all_flags.extend(all_results['structure'].get('flags', []))
-            if 'font' in all_results:
-                all_flags.extend(all_results['font'].get('flags', []))
-            if 'text_layer' in all_results:
-                all_flags.extend(all_results['text_layer'].get('flags', []))
-            if 'layout' in all_results:
-                all_flags.extend(all_results['layout'].get('flags', []))
-            if 'signature' in all_results:
-                all_flags.extend(all_results['signature'].get('flags', []))
-            if 'embedded' in all_results:
-                all_flags.extend(all_results['embedded'].get('flags', []))
-        
-        if all_flags:
-            for flag in all_flags:
-                if 'Missing Metadata' in flag and 'Institutional Content' in flag:
-                    st.warning(f"⚠️ **{flag}**")
-                elif 'Missing Author/Creator Metadata' in flag and 'High Suspicion' in flag:
-                    st.error(f"🔴 **{flag}**")
-                elif 'Missing Metadata' in flag:
-                    st.warning(f"⚠️ **{flag}**")
-                elif 'Digital Manipulation' in flag or 'Inconsistency' in flag:
-                    st.markdown(f"🚩 **{flag}**")
-                elif 'Potential' in flag or 'Smoothing' in flag:
-                    st.markdown(f"⚠️ **{flag}**")
-                elif 'Institutional Indicators' in flag:
-                    st.info(f"ℹ️ **{flag}**")
-                else:
-                    st.markdown(f"ℹ️ **{flag}**")
-            
-            # Show assessment if available
-            metadata = analysis['metadata']['raw_data']
-            assessment = metadata.get('assessment')
-            if assessment:
-                # Determine risk level based on assessment content
-                if 'Likely legitimate' in assessment or 're-saved' in assessment.lower():
-                    st.info(f"📋 **Assessment**: {assessment}")
-                elif 'Requires Verification' in assessment or 'verify' in assessment.lower():
-                    st.warning(f"📋 **Assessment**: {assessment}")
-                else:
-                    st.error(f"📋 **Assessment**: {assessment}")
-            
-            # Show Producer as alternative if metadata is missing
-            completeness = metadata.get('metadata_completeness', {})
-            if not completeness.get('is_complete', True) and completeness.get('has_producer'):
-                producer_note = metadata.get('producer_note', '')
-                if producer_note:
-                    st.info(f"💡 **{producer_note}**")
-                else:
-                    producer_val = metadata.get('producer') or 'Unknown'
-                    st.info(f"💡 **Alternative Indicator Available**: Producer field shows '{producer_val}'")
-        else:
-            st.success("✅ No suspicious forensic signals detected")
-        
-        # AI Content Analysis (moved to Detailed Analysis tab)
-        if analysis.get('ai_content') and analysis['ai_content'].get('is_ai_generated'):
-            st.divider()
-            st.markdown("### 🤖 AI Content Analysis")
-            ai_content = analysis['ai_content']
-            confidence = ai_content.get('confidence', 0)
-            
-            st.warning(f"**AI-Generated Content Detected** (Confidence: {confidence:.1f}%)")
-            
-            with st.expander("ℹ️ What is AI Content Detection?", expanded=False):
-                st.markdown("""
-                **AI Content Detection** analyzes text patterns to identify AI-generated content.
-                
-                **How it works:**
-                - **Punctuation Diversity**: AI text often uses limited punctuation types
-                - **Word Entropy**: Measures vocabulary variety (AI text tends to be less diverse)
-                - **Paragraph Uniformity**: AI often produces paragraphs of similar length
-                - **AI-Typical Phrases**: Detects common phrases used by AI writing assistants
-                - **Sentence Variance**: AI text often has uniform sentence lengths
-                - **Repetition Patterns**: Identifies repetitive word patterns common in AI text
-                
-                **Confidence Score**: Higher scores indicate stronger evidence of AI generation.
-                """)
-            
-            metrics = ai_content.get('metrics', {})
-            if metrics:
-                with st.expander("📊 AI Detection Metrics", expanded=True):
-                    if 'punctuation_diversity' in metrics:
-                        st.metric("Punctuation Diversity", f"{metrics['punctuation_diversity']:.3f}")
-                        st.caption("Lower values (< 0.05) suggest AI generation. Measures variety of punctuation marks used.")
-                    
-                    if 'word_entropy' in metrics:
-                        st.metric("Word Entropy", f"{metrics['word_entropy']:.2f}")
-                        st.caption("Lower values (< 8.5) suggest AI generation. Measures vocabulary diversity using Shannon entropy.")
-                    
-                    if 'paragraph_uniformity' in metrics:
-                        st.metric("Paragraph Uniformity", f"{metrics['paragraph_uniformity']:.2f}")
-                        st.caption("Higher values (> 0.85) suggest AI generation. Measures how similar paragraph lengths are.")
-                    
-                    if 'ai_phrases_count' in metrics:
-                        st.metric("AI-Typical Phrases Found", metrics['ai_phrases_count'])
-                        if metrics.get('ai_phrases'):
-                            st.caption(f"Detected phrases: {', '.join(metrics['ai_phrases'][:10])}")
-            
-            # Show exact locations of AI phrases
-            phrase_locations = metrics.get('ai_phrase_locations', [])
-            if phrase_locations:
-                st.markdown("#### 📍 Exact Locations of AI-Typical Phrases in Text")
-                with st.expander("View detected phrases with exact text locations", expanded=True):
-                    st.markdown("""
-                    **How to read this:**
-                    - Each detected AI-typical phrase is shown with its exact character position in the document
-                    - The context shows surrounding text (50 characters before and after)
-                    - The phrase is highlighted in **bold** within the context
-                    - Use the character positions to locate these phrases in the original document
-                    """)
-                    
-                    for i, loc in enumerate(phrase_locations[:15], 1):  # Show first 15
-                        st.markdown(f"**{i}. Phrase: \"{loc['phrase']}\"**")
-                        st.markdown(f"📍 **Position**: Characters {loc['position']} to {loc['end_position']} in document")
-                        
-                        # Show context with highlighted phrase
-                        context = loc['context']
-                        phrase_in_context = loc['phrase']
-                        # Find the phrase in the context (case-insensitive)
-                        context_lower = context.lower()
-                        phrase_lower = phrase_in_context.lower()
-                        phrase_start = context_lower.find(phrase_lower)
-                        
-                        if phrase_start != -1:
-                            before = context[:phrase_start]
-                            phrase_text = context[phrase_start:phrase_start + len(phrase_in_context)]
-                            after = context[phrase_start + len(phrase_in_context):]
-                            
-                            # Create highlighted text
-                            highlighted = f"...{before}**{phrase_text}**{after}..."
-                            st.markdown(f"**Context (50 chars before/after):**")
-                            st.markdown(highlighted)
-                        else:
-                            st.markdown(f"**Context:**")
-                            st.code(context, language=None)
-                        
-                        if i < len(phrase_locations):
-                            st.divider()
-                    
-                    if len(phrase_locations) > 15:
-                        st.info(f"*Showing first 15 of {len(phrase_locations)} detected phrases. Scroll to see more.*")
-            
-            # Show other indicators
-            indicators = ai_content.get('indicators', [])
-            if indicators:
-                st.markdown("#### 🔍 Additional AI Indicators")
-                for indicator in indicators:
-                    st.markdown(f"⚠️ {indicator}")
-        
-        st.divider()
-        
-        # File DNA
-        st.markdown("### 🧬 File DNA")
-        with st.expander("ℹ️ What is File DNA?", expanded=False):
-            st.markdown("""
-            **File DNA** contains the extracted metadata and properties that uniquely identify how the document was created.
-            
-            **Key Fields:**
-            - **Author/Creator**: Who created the document (if available)
-            - **Producer**: Software used to generate the PDF
-            - **Creation Date**: When the document was first created
-            - **Modification Date**: When the document was last modified
-            - **Institutional Indicators**: Signs of official document origin
-            
-            **Why it matters:**
-            - Legitimate documents typically have complete metadata
-            - Official documents are usually created with specific software
-            - Timeline consistency (creation vs modification) indicates authenticity
-            - Missing metadata may indicate document manipulation or re-saving
-            
-            Compare this information with what you expect for a legitimate document.
-            """)
-        
+
+        # Sub-tabs to keep this view navigable
+        sig_tab, ai_tab, dna_tab, det_tab = st.tabs(
+            ["Forensic signals", "AI content", "File DNA & metadata", "Detector outputs"]
+        )
+
         metadata = analysis['metadata']['raw_data']
-        dna_data = []
         
-        # Extract key metadata
+        # --- Forensic signals (all flags in one place) ---
+        with sig_tab:
+            st.markdown("### 🚨 Forensic signals")
+
+            all_flags = []
+            all_flags.extend(analysis['metadata']['flags'])
+            all_flags.extend(analysis['noise']['flags'])
+
+            # AI‑related flags
+            if analysis.get('ai_content') and analysis['ai_content'].get('is_ai_generated'):
+                ai_content = analysis['ai_content']
+                ai_conf = ai_content.get('confidence', 0)
+                all_flags.append(f"⚠️ AI‑generated content detected (confidence {ai_conf:.1f}%)")
+                for indicator in ai_content.get('indicators', []):
+                    all_flags.append(f"⚠️ {indicator}")
+
+            # Correlation flag
+            if analysis.get('correlation_flag'):
+                all_flags.append(analysis['correlation_flag'])
+
+            # Flags from PDF‑specific detectors
+            if analysis['file_type'] == 'pdf' and analysis.get('all_results'):
+                all_results = analysis['all_results']
+                if 'structure' in all_results:
+                    all_flags.extend(all_results['structure'].get('flags', []))
+                if 'font' in all_results:
+                    all_flags.extend(all_results['font'].get('flags', []))
+                if 'text_layer' in all_results:
+                    all_flags.extend(all_results['text_layer'].get('flags', []))
+                if 'layout' in all_results:
+                    all_flags.extend(all_results['layout'].get('flags', []))
+                if 'signature' in all_results:
+                    all_flags.extend(all_results['signature'].get('flags', []))
+                if 'embedded' in all_results:
+                    all_flags.extend(all_results['embedded'].get('flags', []))
+
+            if all_flags:
+                for flag in all_flags:
+                    if 'Missing Metadata' in flag and 'Institutional Content' in flag:
+                        st.warning(f"⚠️ **{flag}**")
+                    elif 'Missing Author/Creator Metadata' in flag and 'High Suspicion' in flag:
+                        st.error(f"🔴 **{flag}**")
+                    elif 'Missing Metadata' in flag:
+                        st.warning(f"⚠️ **{flag}**")
+                    elif 'Digital Manipulation' in flag or 'Inconsistency' in flag:
+                        st.markdown(f"🚩 **{flag}**")
+                    elif 'Potential' in flag or 'Smoothing' in flag:
+                        st.markdown(f"⚠️ **{flag}**")
+                    elif 'Institutional Indicators' in flag:
+                        st.info(f"ℹ️ **{flag}**")
+                    else:
+                        st.markdown(f"ℹ️ **{flag}**")
+
+                # High‑level assessment from metadata, if present
+                assessment = metadata.get('assessment')
+                if assessment:
+                    if 'Likely legitimate' in assessment or 're-saved' in assessment.lower():
+                        st.info(f"📋 **Assessment**: {assessment}")
+                    elif 'Requires Verification' in assessment or 'verify' in assessment.lower():
+                        st.warning(f"📋 **Assessment**: {assessment}")
+                    else:
+                        st.error(f"📋 **Assessment**: {assessment}")
+
+                completeness = metadata.get('metadata_completeness', {})
+                if not completeness.get('is_complete', True) and completeness.get('has_producer'):
+                    producer_note = metadata.get('producer_note', '')
+                    if producer_note:
+                        st.info(f"💡 **{producer_note}**")
+                    else:
+                        producer_val = metadata.get('producer') or 'Unknown'
+                        st.info(f"💡 **Alternative indicator**: producer field shows '{producer_val}'")
+            else:
+                st.success("✅ No suspicious forensic signals detected.")
+
+        # --- AI content details ---
+        with ai_tab:
+            st.markdown("### 🤖 AI content analysis")
+
+            if analysis.get('ai_content') and analysis['ai_content'].get('is_ai_generated'):
+                ai_content = analysis['ai_content']
+                confidence = ai_content.get('confidence', 0)
+
+                st.warning(f"AI‑generated content detected (confidence {confidence:.1f}%)")
+
+                metrics = ai_content.get('metrics', {})
+                if metrics:
+                    cols = st.columns(3)
+                    if 'punctuation_diversity' in metrics:
+                        cols[0].metric("Punctuation diversity", f"{metrics['punctuation_diversity']:.3f}")
+                    if 'word_entropy' in metrics:
+                        cols[1].metric("Word entropy", f"{metrics['word_entropy']:.2f}")
+                    if 'paragraph_uniformity' in metrics:
+                        cols[2].metric("Paragraph uniformity", f"{metrics['paragraph_uniformity']:.2f}")
+
+                    if 'ai_phrases_count' in metrics:
+                        st.caption(f"AI‑typical phrases found: {metrics['ai_phrases_count']}")
+
+                # Exact locations for AI phrases (if available)
+                phrase_locations = metrics.get('ai_phrase_locations', [])
+                if phrase_locations:
+                    with st.expander("Detected AI‑typical phrases with context", expanded=False):
+                        for i, loc in enumerate(phrase_locations[:15], 1):
+                            st.markdown(f"**{i}. \"{loc['phrase']}\"**")
+                            st.markdown(f"Characters {loc['position']}–{loc['end_position']}")
+
+                            context = loc['context']
+                            phrase_in_context = loc['phrase']
+                            context_lower = context.lower()
+                            phrase_lower = phrase_in_context.lower()
+                            phrase_start = context_lower.find(phrase_lower)
+
+                            if phrase_start != -1:
+                                before = context[:phrase_start]
+                                phrase_text = context[phrase_start:phrase_start + len(phrase_in_context)]
+                                after = context[phrase_start + len(phrase_in_context):]
+                                highlighted = f"...{before}**{phrase_text}**{after}..."
+                                st.markdown(highlighted)
+                            else:
+                                st.code(context, language=None)
+
+                            if i < len(phrase_locations):
+                                st.divider()
+
+                        if len(phrase_locations) > 15:
+                            st.caption(f"Showing first 15 of {len(phrase_locations)} detected phrases.")
+
+                indicators = ai_content.get('indicators', [])
+                if indicators:
+                    st.markdown("#### Additional AI indicators")
+                    for indicator in indicators:
+                        st.markdown(f"- {indicator}")
+            else:
+                st.info("No strong AI‑generated content indicators detected for this document.")
+
+        # --- File DNA & metadata ---
+        with dna_tab:
+            st.markdown("### 🧬 File DNA & metadata")
+
+            dna_data = []
+        
         if analysis['file_type'] == 'pdf':
             pdf_meta = metadata.get('pdf_metadata', {})
-            # Handle empty strings - show 'N/A' instead of blank
             author = (pdf_meta.get('author') or '').strip() or 'N/A'
             creator = (pdf_meta.get('creator') or '').strip() or 'N/A'
             producer = (pdf_meta.get('producer') or '').strip() or 'N/A'
             creation_date = (pdf_meta.get('creationDate') or '').strip() or 'N/A'
             mod_date = (pdf_meta.get('modDate') or '').strip() or 'N/A'
-            
+
             dna_data.append(['Author', author])
             dna_data.append(['Creator', creator])
             dna_data.append(['Producer', producer])
-            dna_data.append(['Creation Date', creation_date])
-            dna_data.append(['Modification Date', mod_date])
-            
-            # Add institutional indicators if found
+            dna_data.append(['Creation date', creation_date])
+            dna_data.append(['Modification date', mod_date])
+
             if metadata.get('institutional_indicators'):
                 indicators_str = ', '.join(metadata['institutional_indicators'])
-                dna_data.append(['Institutional Indicators', indicators_str])
+                dna_data.append(['Institutional indicators', indicators_str])
         else:
             software = (metadata.get('software') or '').strip() or 'N/A'
             camera_make = (metadata.get('Make') or '').strip() or 'N/A'
             camera_model = (metadata.get('Model') or '').strip() or 'N/A'
             date_taken = (metadata.get('DateTime') or '').strip() or 'N/A'
-            
+
             dna_data.append(['Software', software])
-            dna_data.append(['Camera Make', camera_make])
-            dna_data.append(['Camera Model', camera_model])
-            dna_data.append(['Date Taken', date_taken])
-        
-        # Add noise variance
-        dna_data.append(['Noise Variance', f"{analysis['noise']['variance']:.2f}"])
-        
+            dna_data.append(['Camera make', camera_make])
+            dna_data.append(['Camera model', camera_model])
+            dna_data.append(['Date taken', date_taken])
+
+        dna_data.append(['Noise variance', f"{analysis['noise']['variance']:.2f}"])
+
         if dna_data:
             df_dna = pd.DataFrame(dna_data, columns=['Property', 'Value'])
             st.dataframe(df_dna, use_container_width=True, hide_index=True)
-        
-        # Alternative Analysis Section
+
+        # Alternative analysis (PDF only)
         if analysis['file_type'] == 'pdf':
             metadata_completeness = metadata.get('metadata_completeness', {})
             extracted_text = metadata.get('extracted_text')
             institutional_indicators = metadata.get('institutional_indicators', [])
             filename_analysis = metadata.get('filename_analysis', [])
-            
-            if not metadata_completeness.get('is_complete', True) or extracted_text or institutional_indicators or filename_analysis:
-                st.divider()
-                st.markdown("### 🔍 Alternative Analysis")
-                
-                # Metadata Completeness Status
+
+            if (
+                not metadata_completeness.get('is_complete', True)
+                or extracted_text
+                or institutional_indicators
+                or filename_analysis
+            ):
+                st.markdown("#### Alternative indicators")
+
                 if not metadata_completeness.get('is_complete', True):
                     missing = metadata_completeness.get('missing_fields', [])
-                    st.warning(f"⚠️ **Metadata Incomplete**: Missing fields: {', '.join(missing).title()}")
-                    
-                    # Show assessment if available
-                    assessment = metadata.get('assessment')
-                    if assessment:
-                        st.info(f"📋 **Assessment**: {assessment}")
-                    
-                    # Show producer information
+                    st.warning(f"Metadata incomplete: missing {', '.join(missing).title()}")
+
                     if metadata_completeness.get('has_producer'):
                         producer_val = metadata.get('producer') or 'Unknown'
                         producer_note = metadata.get('producer_note', f"Producer: {producer_val}")
-                        st.info(f"ℹ️ **{producer_note}**")
-                        
-                        # Show producer assessment if available
+                        st.info(producer_note)
+
                         producer_assessment = metadata.get('producer_assessment')
                         if producer_assessment:
-                            st.caption(f"💡 {producer_assessment}")
-                
-                # Filename Analysis
+                            st.caption(producer_assessment)
+
                 if filename_analysis:
-                    st.markdown("**Filename Analysis:**")
+                    st.markdown("**Filename analysis**")
                     for indicator in filename_analysis:
                         st.markdown(f"- {indicator}")
-                
-                # Institutional Indicators
+
                 if institutional_indicators:
-                    st.markdown("**Institutional Indicators Found:**")
+                    st.markdown("**Institutional indicators found**")
                     for indicator in institutional_indicators:
                         st.markdown(f"- {indicator.title()}")
-                
-                # Extracted Text Preview
+
                 if extracted_text:
-                    with st.expander("📄 Extracted Text Preview (First 200 characters)"):
+                    with st.expander("Extracted text preview (first 200 characters)", expanded=False):
                         preview = metadata.get('extracted_text_full', extracted_text)[:200]
                         st.text(preview)
-                        if len(metadata.get('extracted_text_full', extracted_text)) > 200:
-                            st.caption(f"Full text available ({len(metadata.get('extracted_text_full', extracted_text))} characters total)")
-                            with st.expander("View Full Extracted Text"):
-                                st.text(metadata.get('extracted_text_full', extracted_text))
-        
-        # Additional findings
-        st.divider()
-        st.markdown("### 📊 Forensic Analysis Details")
-        
-        # Show detailed findings from all detectors
-        if analysis['file_type'] == 'pdf' and analysis.get('all_results'):
-            all_results = analysis['all_results']
-            
-            with st.expander("🔍 PDF Structure Analysis", expanded=False):
-                if 'structure' in all_results:
-                    structure = all_results['structure']
-                    if structure.get('findings'):
-                        st.json(structure['findings'])
-                    st.caption(f"Risk Score: {structure.get('risk_score', 0)}/100")
-                else:
-                    st.info("Structure analysis not available")
-            
-            with st.expander("🔤 Font Analysis", expanded=False):
-                if 'font' in all_results:
-                    font = all_results['font']
-                    if font.get('findings'):
-                        st.json(font['findings'])
-                    st.caption(f"Risk Score: {font.get('risk_score', 0)}/100")
-                else:
-                    st.info("Font analysis not available")
-            
-            with st.expander("📝 Text Layer Analysis", expanded=False):
-                if 'text_layer' in all_results:
-                    text_layer = all_results['text_layer']
-                    if text_layer.get('findings'):
-                        st.json(text_layer['findings'])
-                    st.caption(f"Risk Score: {text_layer.get('risk_score', 0)}/100")
-                else:
-                    st.info("Text layer analysis not available")
-            
-            with st.expander("📐 Layout Analysis", expanded=False):
-                if 'layout' in all_results:
-                    layout = all_results['layout']
-                    if layout.get('findings'):
-                        st.json(layout['findings'])
-                    st.caption(f"Risk Score: {layout.get('risk_score', 0)}/100")
-                else:
-                    st.info("Layout analysis not available")
-            
-            with st.expander("✍️ Signature Analysis", expanded=False):
-                if 'signature' in all_results:
-                    signature = all_results['signature']
-                    if signature.get('findings'):
-                        st.json(signature['findings'])
-                    st.caption(f"Risk Score: {signature.get('risk_score', 0)}/100")
-                else:
-                    st.info("Signature analysis not available")
-            
-            with st.expander("🖼️ Embedded Object Analysis", expanded=False):
-                if 'embedded' in all_results:
-                    embedded = all_results['embedded']
-                    if embedded.get('findings'):
-                        st.json(embedded['findings'])
-                    st.caption(f"Risk Score: {embedded.get('risk_score', 0)}/100")
-                else:
-                    st.info("Embedded object analysis not available")
-        
-        with st.expander("🔊 Noise Variance Analysis"):
-            st.write(analysis['noise']['findings'])
-        
-        with st.expander("📋 Complete Metadata Extraction"):
-            st.json(analysis['metadata']['raw_data'])
+                        full_text = metadata.get('extracted_text_full', extracted_text)
+                        if len(full_text) > 200:
+                            st.caption(f"Full text available ({len(full_text)} characters).")
+                            with st.expander("View full extracted text", expanded=False):
+                                st.text(full_text)
+
+        # --- Detector outputs & raw data ---
+        with det_tab:
+            st.markdown("### 📊 Detector outputs & raw data")
+
+            if analysis['file_type'] == 'pdf' and analysis.get('all_results'):
+                all_results = analysis['all_results']
+
+                with st.expander("PDF structure", expanded=False):
+                    if 'structure' in all_results:
+                        structure = all_results['structure']
+                        if structure.get('findings'):
+                            st.json(structure['findings'])
+                        st.caption(f"Risk score: {structure.get('risk_score', 0)}/100")
+                    else:
+                        st.info("Structure analysis not available.")
+
+                with st.expander("Fonts", expanded=False):
+                    if 'font' in all_results:
+                        font = all_results['font']
+                        if font.get('findings'):
+                            st.json(font['findings'])
+                        st.caption(f"Risk score: {font.get('risk_score', 0)}/100")
+                    else:
+                        st.info("Font analysis not available.")
+
+                with st.expander("Text layer", expanded=False):
+                    if 'text_layer' in all_results:
+                        text_layer = all_results['text_layer']
+                        if text_layer.get('findings'):
+                            st.json(text_layer['findings'])
+                        st.caption(f"Risk score: {text_layer.get('risk_score', 0)}/100")
+                    else:
+                        st.info("Text layer analysis not available.")
+
+                with st.expander("Layout", expanded=False):
+                    if 'layout' in all_results:
+                        layout = all_results['layout']
+                        if layout.get('findings'):
+                            st.json(layout['findings'])
+                        st.caption(f"Risk score: {layout.get('risk_score', 0)}/100")
+                    else:
+                        st.info("Layout analysis not available.")
+
+                with st.expander("Signatures", expanded=False):
+                    if 'signature' in all_results:
+                        signature = all_results['signature']
+                        if signature.get('findings'):
+                            st.json(signature['findings'])
+                        st.caption(f"Risk score: {signature.get('risk_score', 0)}/100")
+                    else:
+                        st.info("Signature analysis not available.")
+
+                with st.expander("Embedded objects", expanded=False):
+                    if 'embedded' in all_results:
+                        embedded = all_results['embedded']
+                        if embedded.get('findings'):
+                            st.json(embedded['findings'])
+                        st.caption(f"Risk score: {embedded.get('risk_score', 0)}/100")
+                    else:
+                        st.info("Embedded object analysis not available.")
+
+            with st.expander("Noise variance analysis", expanded=False):
+                st.write(analysis['noise']['findings'])
+
+            with st.expander("Complete metadata extraction", expanded=False):
+                st.json(analysis['metadata']['raw_data'])
     
     # Forensic Report Tab
     with main_tab3:
