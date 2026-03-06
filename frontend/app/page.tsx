@@ -1,0 +1,1102 @@
+"use client";
+
+import {
+  ChevronRight,
+  CloudUpload,
+  Dna,
+  FileStack,
+  FileText,
+  FolderOpen,
+  Info,
+  Play,
+  PlusSquare,
+  Search,
+  Settings,
+  X,
+} from "lucide-react";
+import { useCallback, useRef, useState } from "react";
+
+/* Exact colors from design */
+const COLORS = {
+  pageBg: "#F8F9FA",
+  sidebarBg: "#F8F9FA",
+  mainBg: "#FFFFFF",
+  textPrimary: "#333333",
+  textSecondary: "#6C757D",
+  purple: "#6B46C1",
+  purpleLight: "#E9E3F5",
+  border: "#DEE2E6",
+  borderDark: "#ADB5BD",
+  cardBg: "#FFFFFF",
+  cardShadow: "0 1px 3px rgba(0,0,0,0.08)",
+  heroGradientFrom: "#5B21B6",
+  heroGradientTo: "#312E81",
+  greenDot: "#22C55E",
+} as const;
+
+const DOC_CLASS_OPTIONS = [
+  { value: "visa_refusal", label: "Visa / UKVI Refusal" },
+  { value: "medical_letter", label: "Medical Note" },
+  { value: "university_letter", label: "University Letter" },
+] as const;
+
+type DocTypeKey = (typeof DOC_CLASS_OPTIONS)[number]["value"];
+
+interface PolicyResult {
+  verdict: "RED" | "AMBER" | "GREEN";
+  reason: string;
+  action: string;
+  critical_flags_hit?: string[];
+}
+
+interface FileDnaRow {
+  property: string;
+  value: string;
+}
+
+interface DetectorSummaryItem {
+  flags: string[];
+  risk_score?: number;
+}
+
+interface AnalyzeResponse {
+  filename: string;
+  doc_type_key: string;
+  forgery_score: number;
+  trust_score: number;
+  red_flags: string[];
+  policy_result: PolicyResult;
+  timestamp: string;
+  preview_image_base64?: string;
+  preview_image_media_type?: string;
+  file_dna?: FileDnaRow[];
+  ela_image_base64?: string;
+  detector_summary?: Record<string, DetectorSummaryItem>;
+  ai_confidence?: number;
+  ai_indicators?: string[];
+  extracted_text?: string;
+  noise_findings?: string;
+}
+
+export default function Home() {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [docTypeKey, setDocTypeKey] = useState<DocTypeKey>("visa_refusal");
+  const [result, setResult] = useState<AnalyzeResponse | null>(null);
+  const [activeView, setActiveView] = useState<"landing" | "result">("landing");
+  const [isDragging, setIsDragging] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [recentScans] = useState<{ name: string; ago: string; status: "red" | "green" | "orange" }[]>([
+    { name: "Visa_Refusal_2024.pdf", ago: "2 mins ago", status: "red" },
+    { name: "Med_Note_J_Doe.jpg", ago: "1 hour ago", status: "green" },
+    { name: "Uni_Letter_V2.pdf", ago: "3 hours ago", status: "orange" },
+  ]);
+
+  const handleUpload = useCallback(
+    async (file: File) => {
+      setUploadError(null);
+      setIsUploading(true);
+      setResult(null);
+      const form = new FormData();
+      form.append("file", file);
+      form.append("doc_type_key", docTypeKey);
+      try {
+        const res = await fetch("http://localhost:8000/api/analyze", {
+          method: "POST",
+          body: form,
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail ?? `Request failed: ${res.status}`);
+        }
+        const data: AnalyzeResponse = await res.json();
+        setResult(data);
+        // API response includes optional: ela_image_base64, detector_summary, ai_confidence, ai_indicators, extracted_text, noise_findings
+        setActiveView("result");
+      } catch (e) {
+        setUploadError(e instanceof Error ? e.message : "Upload failed");
+      } finally {
+        setIsUploading(false);
+      }
+    },
+    [docTypeKey]
+  );
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+      const file = e.dataTransfer.files?.[0];
+      if (file) handleUpload(file);
+    },
+    [handleUpload]
+  );
+
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const onDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  }, []);
+
+  const onFileInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) handleUpload(file);
+      e.target.value = "";
+    },
+    [handleUpload]
+  );
+
+  const [docTab, setDocTab] = useState<"original" | "ela">("original");
+  const [forensicDrawerOpen, setForensicDrawerOpen] = useState(false);
+  const [policyDetailsOpen, setPolicyDetailsOpen] = useState(false);
+  const [redFlagsModalOpen, setRedFlagsModalOpen] = useState(false);
+  const [extractedTextModalOpen, setExtractedTextModalOpen] = useState(false);
+  const policyDetailsAnchorRef = useRef<HTMLButtonElement>(null);
+
+  const showResults = activeView === "result" && !!result;
+  const verdict = result?.policy_result.verdict ?? null;
+
+  const docTypeLabel =
+    DOC_CLASS_OPTIONS.find((opt) => opt.value === docTypeKey)?.label ?? "Unknown Type";
+
+  // Simple helper to format the analyzed timestamp similar to the mock
+  const analyzedAtLabel =
+    result?.timestamp ??
+    new Date().toLocaleString(undefined, {
+      month: "short",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+  const refId = "REF ID: 892-2021-X";
+
+  // AI confidence: use API value when available, else fallback to forgery_score
+  const aiConfidence = result
+    ? Math.max(0, Math.min(100, result.ai_confidence ?? result.forgery_score ?? 0))
+    : 0;
+
+  let primaryVerdictTitle = "";
+  let secondaryVerdictSubtitle = "";
+  if (verdict === "RED") {
+    primaryVerdictTitle = "DO NOT ACCEPT";
+    secondaryVerdictSubtitle = "Critical policy violation detected";
+  } else if (verdict === "AMBER") {
+    primaryVerdictTitle = "MANUAL REVIEW";
+    secondaryVerdictSubtitle = "Irregularities require analyst review";
+  } else if (verdict === "GREEN") {
+    primaryVerdictTitle = "ACCEPT";
+    secondaryVerdictSubtitle = "No critical policy violations detected";
+  }
+
+  return (
+    <div
+      className="flex min-h-screen font-sans"
+      style={{ backgroundColor: COLORS.pageBg, color: COLORS.textPrimary }}
+    >
+      {/* Left sidebar - fixed width ~25% */}
+      <aside
+        className="flex w-[280px] shrink-0 flex-col border-r p-5"
+        style={{ backgroundColor: COLORS.sidebarBg, borderColor: COLORS.border }}
+      >
+        {/* Logo: purple P / folded paper + Student Roost */}
+        <div className="mb-8">
+          <div className="flex items-center gap-2">
+            <div
+              className="flex h-9 w-9 items-center justify-center rounded-lg text-white"
+              style={{ backgroundColor: COLORS.purple }}
+            >
+              <FileText className="h-5 w-5" strokeWidth={2} />
+            </div>
+            <div>
+              <div className="text-[15px] font-bold" style={{ color: COLORS.textPrimary }}>
+                Student Roost
+              </div>
+              <div className="text-[11px] font-medium uppercase tracking-wide" style={{ color: COLORS.textSecondary }}>
+                FRAUD OPS
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* DOCUMENT CLASS */}
+        <div className="mb-5">
+          <div
+            className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider"
+            style={{ color: COLORS.textSecondary }}
+          >
+            Document Class
+          </div>
+          <select
+            value={docTypeKey}
+            onChange={(e) => setDocTypeKey(e.target.value as DocTypeKey)}
+            className="w-full cursor-pointer appearance-none rounded-md border bg-[#F1F3F5] py-2.5 pl-3 pr-8 text-[13px] outline-none focus:ring-1"
+            style={{
+              borderColor: COLORS.borderDark,
+              color: COLORS.textPrimary,
+            }}
+          >
+            {DOC_CLASS_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* NEW ANALYSIS - dashed purple border, purple "or click to browse" */}
+        <div className="mb-5">
+          <div
+            className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider"
+            style={{ color: COLORS.textSecondary }}
+          >
+            New Analysis
+          </div>
+          <label
+            onDrop={onDrop}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed py-7 transition-colors ${
+              isUploading ? "pointer-events-none opacity-60" : ""
+            }`}
+            style={{
+              backgroundColor: "#F1F3F5",
+              borderColor: isDragging ? COLORS.purple : COLORS.purple,
+              opacity: isDragging ? 0.9 : 1,
+            }}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif"
+              className="hidden"
+              onChange={onFileInputChange}
+              disabled={isUploading}
+            />
+            <CloudUpload className="mb-2 h-9 w-9" style={{ color: COLORS.purple }} />
+            <span className="text-[13px] font-semibold" style={{ color: COLORS.textPrimary }}>
+              Drop PDF to Scan
+            </span>
+            <span className="mt-0.5 text-[11px]" style={{ color: COLORS.purple }}>
+              or click to browse
+            </span>
+          </label>
+          {uploadError && (
+            <p className="mt-1.5 text-[11px]" style={{ color: "#DC2626" }}>{uploadError}</p>
+          )}
+        </div>
+
+        {/* MENU - Current Analysis with light purple bg + purple text */}
+        <div className="mb-5">
+          <div
+            className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider"
+            style={{ color: COLORS.textSecondary }}
+          >
+            Menu
+          </div>
+          <nav className="flex flex-col gap-0.5">
+            <a
+              href="#"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] font-medium"
+              style={{ backgroundColor: COLORS.purpleLight, color: COLORS.purple }}
+            >
+              <Search className="h-4 w-4" style={{ color: COLORS.purple }} />
+              Current Analysis
+            </a>
+            <a
+              href="#"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] font-medium hover:bg-white/80"
+              style={{ color: COLORS.textPrimary }}
+            >
+              <FolderOpen className="h-4 w-4" style={{ color: COLORS.textSecondary }} />
+              Case History
+            </a>
+            <a
+              href="#"
+              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] font-medium hover:bg-white/80"
+              style={{ color: COLORS.textPrimary }}
+            >
+              <Settings className="h-4 w-4" style={{ color: COLORS.textSecondary }} />
+              Settings
+            </a>
+          </nav>
+        </div>
+
+        {/* RECENT SCANS */}
+        <div className="mt-auto">
+          <div
+            className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider"
+            style={{ color: COLORS.textSecondary }}
+          >
+            Recent Scans
+          </div>
+          <ul className="space-y-0.5">
+            {recentScans.map((scan) => (
+              <li
+                key={scan.name}
+                className="flex items-center gap-2 rounded-lg px-2 py-1.5"
+              >
+                <FileText className="h-4 w-4 shrink-0" style={{ color: COLORS.textSecondary }} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px]" style={{ color: COLORS.textPrimary }}>
+                    {scan.name}
+                  </div>
+                  <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+                    {scan.ago}
+                  </div>
+                </div>
+                <span
+                  className="h-2 w-2 shrink-0 rounded-full"
+                  style={{
+                    backgroundColor:
+                      scan.status === "red"
+                        ? "#EF4444"
+                        : scan.status === "green"
+                          ? "#22C55E"
+                          : "#F59E0B",
+                  }}
+                  title={scan.status}
+                />
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        {/* User profile - Sarah Jenkins, plus icon in square only */}
+        <div
+          className="mt-5 flex items-center gap-3 border-t pt-4"
+          style={{ borderColor: COLORS.border }}
+        >
+          <div
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[12px] font-semibold"
+            style={{ backgroundColor: COLORS.purpleLight, color: COLORS.purple }}
+          >
+            SJ
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-medium" style={{ color: COLORS.textPrimary }}>
+              Sarah Jenkins
+            </div>
+            <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+              Senior Ops Analyst
+            </div>
+          </div>
+          <button
+            type="button"
+            className="rounded border p-1 hover:opacity-80"
+            style={{ borderColor: COLORS.border, color: COLORS.textSecondary }}
+          >
+            <PlusSquare className="h-4 w-4" />
+          </button>
+        </div>
+      </aside>
+
+      {/* Main content - white background */}
+      <main className="flex flex-1 flex-col" style={{ backgroundColor: COLORS.mainBg }}>
+        {/* Header bar - Landing / Result on far right */}
+        <div
+          className="flex items-center justify-end gap-1 border-b px-6 py-2.5"
+          style={{ borderColor: COLORS.border }}
+        >
+          <button
+            type="button"
+            onClick={() => setActiveView("landing")}
+            className="rounded-full px-4 py-1.5 text-[13px] font-medium transition"
+            style={
+              activeView === "landing"
+                ? { backgroundColor: COLORS.purple, color: "#FFFFFF" }
+                : { color: COLORS.textSecondary, backgroundColor: "transparent" }
+            }
+          >
+            Landing
+          </button>
+          <button
+            type="button"
+            onClick={() => result && setActiveView("result")}
+            disabled={!result}
+            className="rounded-full px-4 py-1.5 text-[13px] font-medium transition disabled:opacity-50"
+            style={
+              activeView === "result"
+                ? { backgroundColor: COLORS.purple, color: "#FFFFFF" }
+                : { color: COLORS.textSecondary, backgroundColor: "transparent" }
+            }
+          >
+            Result
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-auto p-6">
+          {!showResults ? (
+            /* Landing: hero + feature cards */
+            <>
+              {/* Hero - dark purple gradient, white text, white buttons with purple text */}
+              <div
+                className="mx-auto max-w-4xl rounded-2xl p-8 text-white"
+                style={{
+                  background: `linear-gradient(to bottom, ${COLORS.heroGradientFrom}, ${COLORS.heroGradientTo})`,
+                  boxShadow: "0 4px 14px rgba(0,0,0,0.15)",
+                }}
+              >
+                <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-1.5">
+                  <span
+                    className="h-2 w-2 rounded-full"
+                    style={{ backgroundColor: COLORS.greenDot, boxShadow: `0 0 0 3px ${COLORS.greenDot}40` }}
+                  />
+                  <span className="text-[12px] font-medium opacity-95">
+                    System Online v4.2.0 Active
+                  </span>
+                </div>
+                <h1 className="text-[28px] font-bold leading-tight tracking-tight">
+                  Automated Document Forensics Engine
+                </h1>
+                <p className="mt-2 max-w-xl text-[14px] leading-relaxed opacity-95">
+                  Instantly detect metadata anomalies, pixel manipulation, and AI-generated text in
+                  uploaded compliance documents.
+                </p>
+                <div className="mt-6 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="inline-flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-[13px] font-semibold shadow-md transition hover:opacity-95"
+                    style={{ color: COLORS.purple }}
+                  >
+                    <CloudUpload className="h-4 w-4" />
+                    Start New Scan
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-2 rounded-full bg-white px-5 py-2.5 text-[13px] font-medium shadow-md transition hover:opacity-95"
+                    style={{ color: COLORS.purple }}
+                  >
+                    <Play className="h-4 w-4" style={{ color: COLORS.purple }} />
+                    View Demo
+                  </button>
+                </div>
+              </div>
+
+              {/* Feature cards - white, rounded, shadow, purple icons */}
+              <div className="mx-auto mt-6 grid max-w-4xl grid-cols-1 gap-5 sm:grid-cols-3">
+                <div
+                  className="rounded-xl p-5"
+                  style={{ backgroundColor: COLORS.cardBg, boxShadow: COLORS.cardShadow }}
+                >
+                  <div
+                    className="mb-3 flex h-10 w-10 items-center justify-center rounded-full"
+                    style={{ backgroundColor: COLORS.purpleLight }}
+                  >
+                    <FileText className="h-5 w-5" style={{ color: COLORS.purple }} />
+                  </div>
+                  <h3 className="text-[14px] font-bold" style={{ color: COLORS.textPrimary }}>
+                    File DNA & Metadata
+                  </h3>
+                  <p className="mt-1.5 text-[13px] leading-relaxed" style={{ color: COLORS.textSecondary }}>
+                    Deep analysis of EXIF data, creation dates, and modification history to identify
+                    inconsistencies in file origin.
+                  </p>
+                </div>
+                <div
+                  className="rounded-xl p-5"
+                  style={{ backgroundColor: COLORS.cardBg, boxShadow: COLORS.cardShadow }}
+                >
+                  <div
+                    className="mb-3 flex h-10 w-10 items-center justify-center rounded-full"
+                    style={{ backgroundColor: COLORS.purpleLight }}
+                  >
+                    <FileStack className="h-5 w-5" style={{ color: COLORS.purple }} />
+                  </div>
+                  <h3 className="text-[14px] font-bold" style={{ color: COLORS.textPrimary }}>
+                    Pixel & Layout Analysis
+                  </h3>
+                  <p className="mt-1.5 text-[13px] leading-relaxed" style={{ color: COLORS.textSecondary }}>
+                    Error Level Analysis (ELA) to spot digital tampering, copy-paste artifacts, and
+                    font inconsistencies invisible to the naked eye.
+                  </p>
+                </div>
+                <div
+                  className="rounded-xl p-5"
+                  style={{ backgroundColor: COLORS.cardBg, boxShadow: COLORS.cardShadow }}
+                >
+                  <div
+                    className="mb-3 flex h-10 w-10 items-center justify-center rounded-full"
+                    style={{ backgroundColor: COLORS.purpleLight }}
+                  >
+                    <span className="text-[18px] font-bold" style={{ color: COLORS.purple }}>%</span>
+                  </div>
+                  <h3 className="text-[14px] font-bold" style={{ color: COLORS.textPrimary }}>
+                    AI Content Detection
+                  </h3>
+                  <p className="mt-1.5 text-[13px] leading-relaxed" style={{ color: COLORS.textSecondary }}>
+                    Advanced NLP models trained to distinguish between human-written narratives and
+                    LLM-generated fabrication in personal statements.
+                  </p>
+                </div>
+              </div>
+
+              <p
+                className="mt-8 text-center text-[11px]"
+                style={{ color: COLORS.textSecondary }}
+              >
+                © 2024 Student Roost Operations. Internal Use Only.
+              </p>
+            </>
+          ) : (
+            /* Results view – two-column layout matching case analysis UI */
+            <div className="mx-auto flex max-w-6xl gap-6">
+              {/* Left column: case header + document evidence card */}
+              <section className="flex-1 space-y-4">
+                {/* Case header */}
+                <header className="flex items-start justify-between gap-4">
+                  <div>
+                    <div
+                      className="text-[11px] font-semibold uppercase tracking-wider"
+                      style={{ color: COLORS.textSecondary }}
+                    >
+                      {refId}
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <h1 className="text-[18px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                        Case File Analysis:{" "}
+                        <span className="font-normal" style={{ color: COLORS.textSecondary }}>
+                          {result!.filename}
+                        </span>
+                      </h1>
+                      <span
+                        className="rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-wide"
+                        style={{ backgroundColor: COLORS.purpleLight, color: COLORS.purple }}
+                      >
+                        {docTypeLabel}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-2 text-right">
+                    <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+                      Analyzed:{" "}
+                      <span className="font-medium" style={{ color: COLORS.textPrimary }}>
+                        {analyzedAtLabel}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="rounded-md border px-3 py-1.5 text-[12px] font-medium transition hover:bg-slate-50"
+                        style={{
+                          borderColor: COLORS.border,
+                          backgroundColor: "#FFFFFF",
+                          color: COLORS.textPrimary,
+                        }}
+                      >
+                        Export
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-md px-3.5 py-1.5 text-[12px] font-semibold text-white shadow-sm transition hover:opacity-95"
+                        style={{ backgroundColor: "#22C55E" }}
+                      >
+                        Approve Override
+                      </button>
+                    </div>
+                  </div>
+                </header>
+
+                {/* Document evidence card (static preview placeholder) */}
+                <div
+                  className="rounded-2xl border bg-white"
+                  style={{ borderColor: COLORS.border, boxShadow: "0 8px 24px rgba(15,23,42,0.06)" }}
+                >
+                  <div
+                    className="flex items-center justify-between border-b px-6 py-3"
+                    style={{ borderColor: COLORS.border }}
+                  >
+                    <div className="text-[13px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                      Document Evidence
+                    </div>
+                    <div className="flex items-center gap-1 text-[12px] font-medium">
+                      {[
+                        { id: "original" as const, label: "Original" },
+                        { id: "ela" as const, label: "ELA Heatmap" },
+                      ].map((tab) => {
+                        const isActive = docTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setDocTab(tab.id)}
+                            className={`rounded-full px-3 py-1 transition ${
+                              isActive ? "bg-slate-100 text-slate-900" : "text-slate-500 hover:bg-slate-100"
+                            }`}
+                          >
+                            {tab.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-center bg-[#F5F5F7] px-10 py-8">
+                    {docTab === "original" && (
+                      <>
+                        <div
+                          className="flex aspect-[3/4] w-full max-w-md items-center justify-center overflow-hidden rounded-xl border bg-white"
+                          style={{ borderColor: COLORS.border, boxShadow: "0 12px 30px rgba(0,0,0,0.12)" }}
+                        >
+                          {result?.preview_image_base64 ? (
+                            <img
+                              src={`data:${result.preview_image_media_type ?? "image/png"};base64,${result.preview_image_base64}`}
+                              alt="Document preview"
+                              className="h-full w-full object-contain"
+                            />
+                          ) : (
+                            <div className="h-full w-full bg-[url('/sample-case-document.png')] bg-cover bg-center" />
+                          )}
+                        </div>
+                        {/* Zoom control */}
+                        <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#111827]/90 px-3 py-1 text-[11px] text-white shadow-md">
+                          <button
+                            type="button"
+                            className="flex h-6 w-6 items-center justify-center rounded-full bg-black/40 text-[14px]"
+                          >
+                            -
+                          </button>
+                          <span className="px-1">100%</span>
+                          <button
+                            type="button"
+                            className="flex h-6 w-6 items-center justify-center rounded-full bg-black/40 text-[14px]"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </>
+                    )}
+
+                    {docTab === "ela" && (
+                      <div className="flex w-full max-w-md flex-col items-center">
+                        <div
+                          className="flex aspect-[3/4] w-full max-w-md items-center justify-center overflow-hidden rounded-xl border bg-white"
+                          style={{ borderColor: COLORS.border, boxShadow: "0 12px 30px rgba(0,0,0,0.12)" }}
+                        >
+                          {result?.ela_image_base64 ? (
+                            <img
+                              src={`data:image/png;base64,${result.ela_image_base64}`}
+                              alt="ELA heatmap"
+                              className="h-full w-full object-contain"
+                            />
+                          ) : (
+                            <div
+                              className="flex h-64 w-full items-center justify-center rounded-xl border bg-gradient-to-br from-slate-900 via-rose-500 to-amber-400 text-[12px] font-medium text-white"
+                              style={{ borderColor: COLORS.border }}
+                            >
+                              ELA heatmap – bright regions may indicate digital manipulation.
+                            </div>
+                          )}
+                        </div>
+                        <p className="mt-3 text-center text-[11px] text-slate-600">
+                          Error Level Analysis: dark areas are consistent, bright areas highlight potential edits.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              {/* Right column: verdict and red flags */} 
+              <aside className="w-[320px] space-y-4">
+                {/* Forensic verdict card */}
+                <div
+                  className="rounded-2xl border bg-white p-5"
+                  style={{ borderColor: COLORS.border, boxShadow: COLORS.cardShadow }}
+                >
+                  <div
+                    className="mb-3 text-[11px] font-semibold uppercase tracking-wider"
+                    style={{ color: COLORS.textSecondary }}
+                  >
+                    Forensic Verdict
+                  </div>
+                  <div
+                    className="mb-3 rounded-xl px-4 py-3 text-center"
+                    style={{
+                      backgroundColor:
+                        verdict === "RED" ? "#FEE2E2" : verdict === "AMBER" ? "#FEF3C7" : "#DCFCE7",
+                      color: verdict === "RED" ? "#B91C1C" : verdict === "AMBER" ? "#92400E" : "#166534",
+                    }}
+                  >
+                    <div className="text-[13px] font-bold tracking-wide uppercase">
+                      {primaryVerdictTitle}
+                    </div>
+                    <div className="mt-0.5 text-[11px] opacity-90">
+                      {result?.policy_result?.reason ?? secondaryVerdictSubtitle}
+                    </div>
+                    <div className="mt-2 flex justify-center">
+                      <button
+                        ref={policyDetailsAnchorRef}
+                        type="button"
+                        onClick={() => setPolicyDetailsOpen((o) => !o)}
+                        className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-medium opacity-90 hover:opacity-100"
+                        style={{
+                          borderColor: "currentColor",
+                          color: "inherit",
+                        }}
+                      >
+                        <Info className="h-3 w-3" />
+                        See Details
+                      </button>
+                    </div>
+                    {policyDetailsOpen && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-10"
+                          aria-hidden
+                          onClick={() => setPolicyDetailsOpen(false)}
+                        />
+                        <div
+                          className="relative z-20 mt-2 rounded-lg border bg-white p-3 text-left shadow-lg"
+                          style={{ borderColor: COLORS.border }}
+                        >
+                          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Recommended action</div>
+                          <p className="mt-1 text-[12px]" style={{ color: COLORS.textPrimary }}>
+                            {result?.policy_result?.action ?? "—"}
+                          </p>
+                          {(result?.policy_result?.critical_flags_hit?.length ?? 0) > 0 && (
+                            <>
+                              <div className="mt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Critical flags hit</div>
+                              <ul className="mt-1 list-inside list-disc text-[11px]" style={{ color: COLORS.textPrimary }}>
+                                {result!.policy_result!.critical_flags_hit!.map((f, i) => (
+                                  <li key={i}>{f}</li>
+                                ))}
+                              </ul>
+                            </>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-3">
+                    <div className="rounded-lg bg-[#F8F9FA] px-3 py-2.5">
+                      <div
+                        className="text-[10px] font-semibold uppercase tracking-wider"
+                        style={{ color: COLORS.textSecondary }}
+                      >
+                        Forgery Probability
+                      </div>
+                      <div className="mt-1 text-[22px] font-bold" style={{ color: COLORS.textPrimary }}>
+                        {result!.forgery_score}
+                        <span className="text-[14px] font-normal" style={{ color: COLORS.textSecondary }}>
+                          {" "}
+                          /100
+                        </span>
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-[#F8F9FA] px-3 py-2.5">
+                      <div
+                        className="text-[10px] font-semibold uppercase tracking-wider"
+                        style={{ color: COLORS.textSecondary }}
+                      >
+                        Trust Score
+                      </div>
+                      <div className="mt-1 text-[22px] font-bold" style={{ color: COLORS.textPrimary }}>
+                        {result!.trust_score}
+                        <span className="text-[14px] font-normal" style={{ color: COLORS.textSecondary }}>
+                          {" "}
+                          /100
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-full bg-[#111827] px-4 py-2 text-[12px] font-medium text-white shadow-sm transition hover:bg-black"
+                  >
+                    <FileStack className="h-4 w-4" />
+                    Copy Forensic Report
+                  </button>
+                </div>
+
+                {/* Critical red flags & AI confidence */} 
+                <div
+                  className="rounded-2xl border bg-white p-5"
+                  style={{ borderColor: COLORS.border, boxShadow: COLORS.cardShadow }}
+                >
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-red-100 text-red-600 text-[13px]">
+                        !
+                      </span>
+                      <div className="text-[12px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                        Critical Red Flags
+                      </div>
+                    </div>
+                    <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-700">
+                      {result!.red_flags.length} Issues
+                    </span>
+                  </div>
+
+                  {result!.red_flags.length === 0 ? (
+                    <p className="text-[13px]" style={{ color: COLORS.textSecondary }}>
+                      No red flags detected.
+                    </p>
+                  ) : (
+                    <>
+                      <ul className="space-y-2">
+                        {result!.red_flags.slice(0, 3).map((flag, index) => (
+                          <li
+                            key={index}
+                            className="flex items-start gap-2 text-[13px]"
+                            style={{ color: COLORS.textPrimary }}
+                          >
+                            <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
+                            <span>{flag}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      {result!.red_flags.length > 3 && (
+                        <button
+                          type="button"
+                          onClick={() => setRedFlagsModalOpen(true)}
+                          className="mt-2 text-[12px] font-medium text-red-600 hover:underline"
+                        >
+                          Show All ({result!.red_flags.length})
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* Toggle for forensic report drawer */}
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setForensicDrawerOpen(true)}
+                    className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[12px] font-medium transition hover:bg-slate-50"
+                    style={{ borderColor: COLORS.border, color: COLORS.textPrimary }}
+                  >
+                    <FileStack className="h-4 w-4" />
+                    Forensic Report
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </aside>
+
+              {/* Red Flags modal (full list + detector breakdown) */}
+              {redFlagsModalOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40 bg-black/40"
+                    aria-hidden
+                    onClick={() => setRedFlagsModalOpen(false)}
+                  />
+                  <div
+                    className="fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col border-l bg-white shadow-xl"
+                    style={{ borderColor: COLORS.border }}
+                  >
+                    <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: COLORS.border }}>
+                      <h3 className="text-[14px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                        All Red Flags & Detector Breakdown
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setRedFlagsModalOpen(false)}
+                        className="rounded p-1 hover:bg-slate-100"
+                      >
+                        <X className="h-5 w-5" />
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                      <section>
+                        <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
+                          Red Flags ({result?.red_flags?.length ?? 0})
+                        </h4>
+                        <ul className="space-y-2">
+                          {(result?.red_flags ?? []).map((flag, i) => (
+                            <li key={i} className="flex items-start gap-2 text-[13px]" style={{ color: COLORS.textPrimary }}>
+                              <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
+                              <span>{flag}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
+                      {result?.detector_summary && Object.keys(result.detector_summary).length > 0 && (
+                        <section>
+                          <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
+                            Detector Breakdown
+                          </h4>
+                          <div className="space-y-3">
+                            {Object.entries(result.detector_summary).map(([key, val]) => (
+                              <div key={key} className="rounded-lg border p-3" style={{ borderColor: COLORS.border }}>
+                                <div className="text-[12px] font-medium capitalize" style={{ color: COLORS.textPrimary }}>
+                                  {key.replace(/_/g, " ")}
+                                  {val.risk_score != null && (
+                                    <span className="ml-2 text-[11px] font-normal" style={{ color: COLORS.textSecondary }}>
+                                      (risk: {val.risk_score})
+                                    </span>
+                                  )}
+                                </div>
+                                {(val.flags?.length ?? 0) > 0 ? (
+                                  <ul className="mt-1.5 list-inside list-disc text-[11px]" style={{ color: COLORS.textSecondary }}>
+                                    {val.flags!.map((f, i) => (
+                                      <li key={i}>{f}</li>
+                                    ))}
+                                  </ul>
+                                ) : (
+                                  <p className="mt-1 text-[11px]" style={{ color: COLORS.textSecondary }}>No flags</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </section>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Extracted Text modal */}
+              {extractedTextModalOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40 bg-black/40"
+                    aria-hidden
+                    onClick={() => setExtractedTextModalOpen(false)}
+                  />
+                  <div
+                    className="fixed inset-8 z-50 mx-auto max-w-2xl overflow-hidden rounded-2xl border bg-white shadow-xl flex flex-col"
+                    style={{ borderColor: COLORS.border }}
+                  >
+                    <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: COLORS.border }}>
+                      <h3 className="text-[14px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                        Extracted Text
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setExtractedTextModalOpen(false)}
+                        className="rounded p-1 hover:bg-slate-100"
+                      >
+                        <X className="h-5 w-5" />
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-4 text-[13px] leading-relaxed whitespace-pre-wrap" style={{ color: COLORS.textPrimary }}>
+                      {result?.extracted_text?.trim() ? result.extracted_text : "No extracted text available for this document."}
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* Collapsible Forensic Report side-drawer */}
+              {forensicDrawerOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-30 bg-black/20"
+                    aria-hidden
+                    onClick={() => setForensicDrawerOpen(false)}
+                  />
+                  <div
+                    className="fixed right-0 top-0 z-40 flex h-full w-full max-w-sm flex-col border-l bg-white shadow-xl"
+                    style={{ borderColor: COLORS.border }}
+                  >
+                    <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: COLORS.border }}>
+                      <h3 className="text-[14px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                        Forensic Report
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setForensicDrawerOpen(false)}
+                        className="rounded p-1 hover:bg-slate-100"
+                      >
+                        <X className="h-5 w-5" />
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-4 space-y-5">
+                      {/* AI Confidence Details */}
+                      <section>
+                        <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
+                          AI Confidence Details
+                        </h4>
+                        <div className="flex items-center gap-4">
+                          <div className="relative h-20 w-20 shrink-0">
+                            <div className="absolute inset-0 rounded-full bg-slate-200" />
+                            <div
+                              className="absolute inset-0 rounded-full"
+                              style={{
+                                backgroundImage: `conic-gradient(#22C55E 0deg ${aiConfidence * 3.6}deg, #E5E7EB 0deg 360deg)`,
+                              }}
+                            />
+                            <div className="absolute inset-3 flex flex-col items-center justify-center rounded-full bg-white">
+                              <span className="text-[13px] font-semibold text-slate-900">{aiConfidence}%</span>
+                              <span className="text-[10px] font-medium text-slate-500">AI Score</span>
+                            </div>
+                          </div>
+                          <p className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+                            How strongly the system believes AI-generated content is present. Higher = stronger AI signals.
+                          </p>
+                        </div>
+                        {(result?.ai_indicators?.length ?? 0) > 0 && (
+                          <ul className="mt-2 list-inside list-disc text-[11px]" style={{ color: COLORS.textSecondary }}>
+                            {result!.ai_indicators!.map((ind, i) => (
+                              <li key={i}>{ind}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </section>
+
+                      {/* Extracted Text button */}
+                      <section>
+                        <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
+                          Extracted Text
+                        </h4>
+                        <button
+                          type="button"
+                          onClick={() => setExtractedTextModalOpen(true)}
+                          className="flex w-full items-center justify-center gap-2 rounded-lg border px-3 py-2 text-[12px] font-medium hover:bg-slate-50"
+                          style={{ borderColor: COLORS.border, color: COLORS.textPrimary }}
+                        >
+                          <FileText className="h-4 w-4" />
+                          View Extracted Text
+                        </button>
+                      </section>
+
+                      {/* Noise Findings */}
+                      <section>
+                        <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
+                          Noise Findings
+                        </h4>
+                        <p className="text-[12px] leading-relaxed" style={{ color: COLORS.textPrimary }}>
+                          {result?.noise_findings?.trim() ? result.noise_findings : "No noise analysis summary available."}
+                        </p>
+                      </section>
+
+                      {/* File DNA in drawer */}
+                      {result?.file_dna?.length ? (
+                        <section>
+                          <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2 flex items-center gap-1.5" style={{ color: COLORS.textSecondary }}>
+                            <Dna className="h-3.5 w-3.5" style={{ color: COLORS.purple }} />
+                            File DNA
+                          </h4>
+                          <div className="rounded-lg border overflow-hidden" style={{ borderColor: COLORS.border }}>
+                            <table className="w-full text-left text-[11px]">
+                              <tbody style={{ color: COLORS.textPrimary }}>
+                                {result.file_dna.map((row, i) => (
+                                  <tr key={i} className="border-b last:border-b-0" style={{ borderColor: COLORS.border }}>
+                                    <td className="px-2 py-1.5 font-medium" style={{ color: COLORS.textSecondary }}>{row.property}</td>
+                                    <td className="px-2 py-1.5 break-words">{row.value}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </section>
+                      ) : null}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
