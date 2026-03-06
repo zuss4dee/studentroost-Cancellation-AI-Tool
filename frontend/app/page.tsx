@@ -14,7 +14,13 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+const MAX_FILE_SIZE_MB = 200;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+const TOAST_AUTO_DISMISS_MS = 6000;
+
+type ToastItem = { id: number; message: string; type: "error" | "success" };
 
 /* Exact colors from design */
 const COLORS = {
@@ -86,6 +92,19 @@ export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+  const toastIdRef = useRef(0);
+  const addToast = useCallback((message: string, type: ToastItem["type"] = "error") => {
+    const id = ++toastIdRef.current;
+    setToasts((prev) => [...prev, { id, message, type }]);
+    const t = setTimeout(() => {
+      setToasts((prev) => prev.filter((x) => x.id !== id));
+    }, TOAST_AUTO_DISMISS_MS);
+    return () => clearTimeout(t);
+  }, []);
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((x) => x.id !== id));
+  }, []);
   const [recentScans] = useState<{ name: string; ago: string; status: "red" | "green" | "orange" }[]>([
     { name: "Visa_Refusal_2024.pdf", ago: "2 mins ago", status: "red" },
     { name: "Med_Note_J_Doe.jpg", ago: "1 hour ago", status: "green" },
@@ -95,8 +114,13 @@ export default function Home() {
   const handleUpload = useCallback(
     async (file: File) => {
       setUploadError(null);
+      if (file.size > MAX_FILE_SIZE_BYTES) {
+        addToast(`Document too large (Max ${MAX_FILE_SIZE_MB}MB)`, "error");
+        return;
+      }
       setIsUploading(true);
       setResult(null);
+      setActiveView("result");
       const form = new FormData();
       form.append("file", file);
       form.append("doc_type_key", docTypeKey);
@@ -111,15 +135,16 @@ export default function Home() {
         }
         const data: AnalyzeResponse = await res.json();
         setResult(data);
-        // API response includes optional: ela_image_base64, detector_summary, ai_confidence, ai_indicators, extracted_text, noise_findings
         setActiveView("result");
       } catch (e) {
-        setUploadError(e instanceof Error ? e.message : "Upload failed");
+        const message = e instanceof Error ? e.message : "Upload failed";
+        setUploadError(message);
+        addToast(message, "error");
       } finally {
         setIsUploading(false);
       }
     },
-    [docTypeKey]
+    [docTypeKey, addToast]
   );
 
   const onDrop = useCallback(
@@ -173,6 +198,7 @@ export default function Home() {
     .toUpperCase() || "?";
 
   const showResults = activeView === "result" && !!result;
+  const showSkeleton = isUploading && !result;
   const verdict = result?.policy_result.verdict ?? null;
 
   const docTypeLabel =
@@ -214,6 +240,42 @@ export default function Home() {
       className="flex min-h-screen font-sans"
       style={{ backgroundColor: COLORS.pageBg, color: COLORS.textPrimary }}
     >
+      {/* Toast notifications - top right */}
+      <div
+        className="fixed right-4 top-4 z-[100] flex flex-col gap-2"
+        role="region"
+        aria-label="Notifications"
+      >
+        {toasts.map((t) => (
+          <div
+            key={t.id}
+            className="flex items-start gap-3 rounded-lg border px-4 py-3 shadow-lg"
+            style={{
+              backgroundColor: t.type === "error" ? "#FEF2F2" : "#F0FDF4",
+              borderColor: t.type === "error" ? "#FECACA" : "#BBF7D0",
+              maxWidth: "min(360px, calc(100vw - 2rem))",
+            }}
+          >
+            <span
+              className="text-[13px] font-medium"
+              style={{ color: t.type === "error" ? "#B91C1C" : "#166534", flex: 1 }}
+            >
+              {t.type === "error" ? "Error: " : ""}
+              {t.message}
+            </span>
+            <button
+              type="button"
+              onClick={() => dismissToast(t.id)}
+              className="shrink-0 rounded p-1 hover:opacity-80"
+              style={{ color: t.type === "error" ? "#B91C1C" : "#166534" }}
+              aria-label="Dismiss"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        ))}
+      </div>
+
       {/* Left sidebar - fixed width ~25% */}
       <aside
         className="flex w-[280px] shrink-0 flex-col border-r p-5"
@@ -346,7 +408,7 @@ export default function Home() {
             {recentScans.map((scan) => (
               <li
                 key={scan.name}
-                className="flex items-center gap-2 rounded-lg px-2 py-1.5"
+                className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors transition-shadow hover:bg-slate-50 hover:shadow-sm"
               >
                 <FileText className="h-4 w-4 shrink-0" style={{ color: COLORS.textSecondary }} />
                 <div className="min-w-0 flex-1">
@@ -556,6 +618,89 @@ export default function Home() {
                 © 2024 Student Roost Operations. Internal Use Only.
               </p>
             </>
+          ) : showSkeleton ? (
+            /* Skeleton: gray pulsing replica of result layout */
+            <div className="mx-auto flex max-w-6xl items-start gap-6 animate-pulse">
+              <section className="flex-1 space-y-4">
+                <header className="flex items-start justify-between gap-4">
+                  <div className="space-y-2">
+                    <div className="h-3 w-24 rounded bg-slate-200" />
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="h-5 w-64 rounded bg-slate-200" />
+                      <div className="h-6 w-20 rounded-full bg-slate-200" />
+                    </div>
+                  </div>
+                  <div className="h-4 w-28 rounded bg-slate-200" />
+                </header>
+                <div
+                  className="rounded-2xl border bg-white"
+                  style={{ borderColor: COLORS.border, boxShadow: "0 8px 24px rgba(15,23,42,0.06)" }}
+                >
+                  <div className="flex items-center justify-between border-b px-6 py-3" style={{ borderColor: COLORS.border }}>
+                    <div className="h-4 w-36 rounded bg-slate-200" />
+                    <div className="flex gap-2">
+                      <div className="h-7 w-20 rounded-full bg-slate-200" />
+                      <div className="h-7 w-24 rounded-full bg-slate-200" />
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-center bg-[#F5F5F7] px-10 py-8">
+                    <div
+                      className="flex aspect-[3/4] w-full max-w-xl items-center justify-center overflow-hidden rounded-xl border bg-slate-200"
+                      style={{ borderColor: COLORS.border }}
+                    />
+                    <div className="mt-4 flex gap-2">
+                      <div className="h-8 w-24 rounded-full bg-slate-200" />
+                      <div className="h-8 w-12 rounded-full bg-slate-200" />
+                    </div>
+                  </div>
+                </div>
+              </section>
+              <aside className="w-[400px] space-y-4">
+                <div
+                  className="rounded-2xl border bg-white p-6"
+                  style={{ borderColor: COLORS.border, boxShadow: COLORS.cardShadow }}
+                >
+                  <div className="mb-5 h-3 w-28 rounded bg-slate-200" />
+                  <div className="rounded-xl bg-slate-200 px-5 py-4">
+                    <div className="h-6 w-40 rounded bg-slate-300" />
+                    <div className="mt-2 h-4 w-full rounded bg-slate-300" />
+                    <div className="mt-3 h-6 w-20 rounded-full bg-slate-300" />
+                  </div>
+                  <div className="mt-5 grid grid-cols-2 gap-3">
+                    <div className="rounded-lg border bg-slate-100 px-3 py-2.5" style={{ borderColor: COLORS.border }}>
+                      <div className="h-3 w-20 rounded bg-slate-200" />
+                      <div className="mt-2 h-6 w-12 rounded bg-slate-200" />
+                      <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200" />
+                    </div>
+                    <div className="rounded-lg border bg-slate-100 px-3 py-2.5" style={{ borderColor: COLORS.border }}>
+                      <div className="h-3 w-16 rounded bg-slate-200" />
+                      <div className="mt-2 h-6 w-12 rounded bg-slate-200" />
+                      <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200" />
+                    </div>
+                  </div>
+                </div>
+                <div
+                  className="rounded-2xl border bg-white p-5"
+                  style={{ borderColor: COLORS.border, boxShadow: COLORS.cardShadow }}
+                >
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="h-6 w-6 rounded-full bg-slate-200" />
+                      <div className="h-4 w-32 rounded bg-slate-200" />
+                    </div>
+                    <div className="h-5 w-16 rounded-full bg-slate-200" />
+                  </div>
+                  <div className="space-y-2">
+                    <div className="h-4 w-full rounded bg-slate-200" />
+                    <div className="h-4 w-11/12 rounded bg-slate-200" />
+                    <div className="h-4 w-4/5 rounded bg-slate-200" />
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <div className="h-10 w-36 rounded-lg bg-slate-200" />
+                </div>
+              </aside>
+            </div>
           ) : (
             /* Results view – two-column layout matching case analysis UI */
             <div className="mx-auto flex max-w-6xl items-start gap-6">
