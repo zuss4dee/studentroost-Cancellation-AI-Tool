@@ -1,8 +1,8 @@
 # config/policies.yaml
 
 global_thresholds:
-  high_risk_score: 70
-  medium_risk_score: 40
+  high_risk_score: 55
+  medium_risk_score: 35
 
 document_types:
   visa_refusal:

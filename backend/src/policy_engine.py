@@ -6,7 +6,7 @@ except ImportError:
     yaml = None  # Install PyYAML for policy config: pip install PyYAML
 
 _DEFAULT_CONFIG = {
-    'global_thresholds': {'high_risk_score': 70, 'medium_risk_score': 40},
+    'global_thresholds': {'high_risk_score': 55, 'medium_risk_score': 35},
     'document_types': {}
 }
 
@@ -65,25 +65,43 @@ class PolicyEngine:
                     'critical_flags_hit': [reject_reason]
                 }
 
-        # 3. Check Critical Flags
-        # These are specific flags that are unacceptable for this doc type
+        # 3. Check Critical Flags (include all detectors: metadata, noise, structure, font, etc.)
         critical_flags_config = policy.get('critical_flags', [])
         hit_critical_flags = []
 
-        # Flatten all detected flags from analysis
-        detected_flags = analysis['metadata'].get('flags', []) + \
-                         analysis['noise'].get('flags', [])
+        # Flatten all detected flags from metadata, noise, and PDF detectors
+        detected_flags = list(analysis['metadata'].get('flags', [])) + \
+                        list(analysis['noise'].get('flags', []))
+        all_results = analysis.get('all_results', {})
+        for key in ('structure', 'font', 'text_layer', 'layout', 'signature', 'embedded'):
+            if key in all_results and all_results[key].get('flags'):
+                detected_flags.extend(all_results[key]['flags'])
 
-        # Check metadata flags against critical config
+        # Critical config can use short names; map to flag substrings where needed
+        critical_substrings = {
+            'pixel_manipulation': ('smoothing', 'manipulation', 'ela', 'noise'),
+            'timeline_anomaly': ('timeline', 'time gap', 'temporal', 'modified after', 'anomaly'),
+            'suspicious_software': ('photoshop', 'gimp', 'canva', 'digital manipulation software'),
+        }
+
         for flag in detected_flags:
             flag_lower = flag.lower()
             for critical in critical_flags_config:
-                # Simple substring matching
-                if critical.lower() in flag_lower:
+                c = critical.lower()
+                if c in flag_lower:
                     hit_critical_flags.append(flag)
-                # specific handling for "author_is_person" mapping
+                    break
                 elif critical == "author_is_person" and "author field" in flag_lower:
                     hit_critical_flags.append(flag)
+                    break
+                # Use substring mapping for known critical types
+                for sub in critical_substrings.get(critical, ()):
+                    if sub in flag_lower:
+                        hit_critical_flags.append(flag)
+                        break
+                else:
+                    continue
+                break
 
         if hit_critical_flags:
             return {
@@ -93,29 +111,39 @@ class PolicyEngine:
                 'critical_flags_hit': hit_critical_flags
             }
 
-        # 4. Check Risk Scores (Weighted)
-        # We can apply custom weights from config here if needed
+        # 4. Check Risk Scores (aggregate metadata + PDF detectors for better fraud detection)
         risk_score = analysis['metadata']['risk_score']
         trust_score = analysis['metadata']['trust_score']
+
+        # Include PDF detector risk so structure/font/signature anomalies push toward RED
+        all_results = analysis.get('all_results', {})
+        detector_risks = []
+        for key in ('structure', 'font', 'text_layer', 'layout', 'signature', 'embedded'):
+            if key in all_results and all_results[key] is not None:
+                r = all_results[key].get('risk_score')
+                if r is not None:
+                    detector_risks.append(r)
+        max_detector_risk = max(detector_risks) if detector_risks else 0
+        # Effective risk: metadata risk boosted by any high detector risk (so fraud indicators = RED)
+        effective_risk = min(100, risk_score + 0.4 * max_detector_risk)
 
         # Adjust score based on weights if defined
         weights = policy.get('weights', {})
         if 'ai_content' in weights and analysis.get('ai_content', {}).get('is_ai_generated'):
-            # Artificial score boost for AI content if weighted heavily
-            risk_score = min(100, risk_score * weights['ai_content'])
+            effective_risk = min(100, effective_risk * weights['ai_content'])
 
         thresholds = self.config.get('global_thresholds', {})
-        high_risk = thresholds.get('high_risk_score', 70)
-        medium_risk = thresholds.get('medium_risk_score', 40)
+        high_risk = thresholds.get('high_risk_score', 55)
+        medium_risk = thresholds.get('medium_risk_score', 35)
 
-        if risk_score >= high_risk or trust_score < 40:
+        if effective_risk >= high_risk or trust_score < 45:
             return {
                 'verdict': 'RED',
-                'reason': f"High Risk Score ({risk_score}/100)",
+                'reason': f"High Risk Score ({int(effective_risk)}/100)",
                 'action': "Reject or request original digital evidence.",
                 'critical_flags_hit': []
             }
-        elif risk_score >= medium_risk:
+        elif effective_risk >= medium_risk:
             return {
                 'verdict': 'AMBER',
                 'reason': "Moderate Anomalies Detected",
@@ -162,8 +190,16 @@ class PolicyEngine:
     def _evaluate_generic(self, analysis):
         """Fallback for unknown document types"""
         risk = analysis['metadata']['risk_score']
-        if risk >= 70:
+        trust = analysis['metadata'].get('trust_score', 85)
+        all_results = analysis.get('all_results', {})
+        max_d = 0
+        for key in ('structure', 'font', 'signature', 'text_layer', 'layout', 'embedded'):
+            if key in all_results and all_results[key]:
+                r = all_results[key].get('risk_score') or 0
+                max_d = max(max_d, r)
+        effective = min(100, risk + 0.4 * max_d)
+        if effective >= 55 or trust < 45:
             return {'verdict': 'RED', 'reason': 'Generic High Risk', 'action': 'Reject', 'critical_flags_hit': []}
-        elif risk >= 40:
+        elif effective >= 35:
             return {'verdict': 'AMBER', 'reason': 'Generic Moderate Risk', 'action': 'Review', 'critical_flags_hit': []}
         return {'verdict': 'GREEN', 'reason': 'Low Risk', 'action': 'Accept', 'critical_flags_hit': []}

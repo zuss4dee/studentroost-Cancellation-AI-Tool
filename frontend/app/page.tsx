@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertTriangle,
   ChevronRight,
   CloudUpload,
   Dna,
@@ -11,7 +12,6 @@ import {
   Play,
   PlusSquare,
   Search,
-  Settings,
   X,
 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
@@ -152,11 +152,25 @@ export default function Home() {
   );
 
   const [docTab, setDocTab] = useState<"original" | "ela">("original");
+  const [documentZoom, setDocumentZoom] = useState(100);
+  const [documentPan, setDocumentPan] = useState({ x: 0, y: 0 });
+  const [isPanning, setIsPanning] = useState(false);
+  const panStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
   const [forensicDrawerOpen, setForensicDrawerOpen] = useState(false);
   const [policyDetailsOpen, setPolicyDetailsOpen] = useState(false);
   const [redFlagsModalOpen, setRedFlagsModalOpen] = useState(false);
   const [extractedTextModalOpen, setExtractedTextModalOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [userProfile, setUserProfile] = useState({ displayName: "Sarah Jenkins", role: "Senior Ops Analyst" });
   const policyDetailsAnchorRef = useRef<HTMLButtonElement>(null);
+
+  const profileInitials = userProfile.displayName
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0] ?? "")
+    .join("")
+    .toUpperCase() || "?";
 
   const showResults = activeView === "result" && !!result;
   const verdict = result?.policy_result.verdict ?? null;
@@ -181,16 +195,17 @@ export default function Home() {
     ? Math.max(0, Math.min(100, result.ai_confidence ?? result.forgery_score ?? 0))
     : 0;
 
+  // Three verdict stages from scan outcome
   let primaryVerdictTitle = "";
   let secondaryVerdictSubtitle = "";
   if (verdict === "RED") {
-    primaryVerdictTitle = "DO NOT ACCEPT";
+    primaryVerdictTitle = "Do not accept";
     secondaryVerdictSubtitle = "Critical policy violation detected";
   } else if (verdict === "AMBER") {
-    primaryVerdictTitle = "MANUAL REVIEW";
+    primaryVerdictTitle = "Further proof required";
     secondaryVerdictSubtitle = "Irregularities require analyst review";
   } else if (verdict === "GREEN") {
-    primaryVerdictTitle = "ACCEPT";
+    primaryVerdictTitle = "Accept";
     secondaryVerdictSubtitle = "No critical policy violations detected";
   }
 
@@ -316,14 +331,6 @@ export default function Home() {
               <FolderOpen className="h-4 w-4" style={{ color: COLORS.textSecondary }} />
               Case History
             </a>
-            <a
-              href="#"
-              className="flex items-center gap-2 rounded-lg px-3 py-2 text-[13px] font-medium hover:bg-white/80"
-              style={{ color: COLORS.textPrimary }}
-            >
-              <Settings className="h-4 w-4" style={{ color: COLORS.textSecondary }} />
-              Settings
-            </a>
           </nav>
         </div>
 
@@ -367,29 +374,37 @@ export default function Home() {
           </ul>
         </div>
 
-        {/* User profile - Sarah Jenkins, plus icon in square only */}
+        {/* User profile - clickable to open profile drawer */}
         <div
           className="mt-5 flex items-center gap-3 border-t pt-4"
           style={{ borderColor: COLORS.border }}
         >
-          <div
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[12px] font-semibold"
-            style={{ backgroundColor: COLORS.purpleLight, color: COLORS.purple }}
-          >
-            SJ
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="truncate text-[13px] font-medium" style={{ color: COLORS.textPrimary }}>
-              Sarah Jenkins
-            </div>
-            <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
-              Senior Ops Analyst
-            </div>
-          </div>
           <button
             type="button"
+            onClick={() => setProfileOpen(true)}
+            className="flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left transition-colors hover:bg-white/60"
+          >
+            <div
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[12px] font-semibold"
+              style={{ backgroundColor: COLORS.purpleLight, color: COLORS.purple }}
+            >
+              {profileInitials}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[13px] font-medium" style={{ color: COLORS.textPrimary }}>
+                {userProfile.displayName}
+              </div>
+              <div className="truncate text-[11px]" style={{ color: COLORS.textSecondary }}>
+                {userProfile.role}
+              </div>
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setProfileOpen(true)}
             className="rounded border p-1 hover:opacity-80"
             style={{ borderColor: COLORS.border, color: COLORS.textSecondary }}
+            title="Profile"
           >
             <PlusSquare className="h-4 w-4" />
           </button>
@@ -405,7 +420,6 @@ export default function Home() {
         >
           <button
             type="button"
-            onClick={() => setActiveView("landing")}
             className="rounded-full px-4 py-1.5 text-[13px] font-medium transition"
             style={
               activeView === "landing"
@@ -417,8 +431,6 @@ export default function Home() {
           </button>
           <button
             type="button"
-            onClick={() => result && setActiveView("result")}
-            disabled={!result}
             className="rounded-full px-4 py-1.5 text-[13px] font-medium transition disabled:opacity-50"
             style={
               activeView === "result"
@@ -546,7 +558,7 @@ export default function Home() {
             </>
           ) : (
             /* Results view – two-column layout matching case analysis UI */
-            <div className="mx-auto flex max-w-6xl gap-6">
+            <div className="mx-auto flex max-w-6xl items-start gap-6">
               {/* Left column: case header + document evidence card */}
               <section className="flex-1 space-y-4">
                 {/* Case header */}
@@ -579,26 +591,6 @@ export default function Home() {
                       <span className="font-medium" style={{ color: COLORS.textPrimary }}>
                         {analyzedAtLabel}
                       </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        className="rounded-md border px-3 py-1.5 text-[12px] font-medium transition hover:bg-slate-50"
-                        style={{
-                          borderColor: COLORS.border,
-                          backgroundColor: "#FFFFFF",
-                          color: COLORS.textPrimary,
-                        }}
-                      >
-                        Export
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-md px-3.5 py-1.5 text-[12px] font-semibold text-white shadow-sm transition hover:opacity-95"
-                        style={{ backgroundColor: "#22C55E" }}
-                      >
-                        Approve Override
-                      </button>
                     </div>
                   </div>
                 </header>
@@ -641,32 +633,84 @@ export default function Home() {
                       <>
                         <div
                           className="flex aspect-[3/4] w-full max-w-md items-center justify-center overflow-hidden rounded-xl border bg-white"
-                          style={{ borderColor: COLORS.border, boxShadow: "0 12px 30px rgba(0,0,0,0.12)" }}
+                          style={{
+                            borderColor: COLORS.border,
+                            boxShadow: "0 12px 30px rgba(0,0,0,0.12)",
+                            cursor: isPanning ? "grabbing" : "grab",
+                          }}
+                          onMouseDown={(e) => {
+                            if (e.button !== 0) return;
+                            setIsPanning(true);
+                            panStartRef.current = {
+                              x: e.clientX,
+                              y: e.clientY,
+                              panX: documentPan.x,
+                              panY: documentPan.y,
+                            };
+                          }}
+                          onMouseMove={(e) => {
+                            if (!panStartRef.current) return;
+                            setDocumentPan({
+                              x: panStartRef.current.panX + (e.clientX - panStartRef.current.x),
+                              y: panStartRef.current.panY + (e.clientY - panStartRef.current.y),
+                            });
+                          }}
+                          onMouseUp={() => {
+                            setIsPanning(false);
+                            panStartRef.current = null;
+                          }}
+                          onMouseLeave={() => {
+                            if (panStartRef.current) {
+                              setIsPanning(false);
+                              panStartRef.current = null;
+                            }
+                          }}
                         >
-                          {result?.preview_image_base64 ? (
-                            <img
-                              src={`data:${result.preview_image_media_type ?? "image/png"};base64,${result.preview_image_base64}`}
-                              alt="Document preview"
-                              className="h-full w-full object-contain"
-                            />
-                          ) : (
-                            <div className="h-full w-full bg-[url('/sample-case-document.png')] bg-cover bg-center" />
-                          )}
+                          <div
+                            className="flex h-full w-full items-center justify-center select-none"
+                            style={{
+                              transform: `translate(${documentPan.x}px, ${documentPan.y}px) scale(${documentZoom / 100})`,
+                              transformOrigin: "center center",
+                            }}
+                            onMouseDown={(e) => e.preventDefault()}
+                          >
+                            {result?.preview_image_base64 ? (
+                              <img
+                                src={`data:${result.preview_image_media_type ?? "image/png"};base64,${result.preview_image_base64}`}
+                                alt="Document preview"
+                                className="h-full w-full object-contain pointer-events-none"
+                                draggable={false}
+                              />
+                            ) : (
+                              <div className="h-full w-full bg-[url('/sample-case-document.png')] bg-cover bg-center pointer-events-none" />
+                            )}
+                          </div>
                         </div>
-                        {/* Zoom control */}
-                        <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-[#111827]/90 px-3 py-1 text-[11px] text-white shadow-md">
+                        {/* Zoom & pan control */}
+                        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                          <div className="inline-flex items-center gap-2 rounded-full bg-[#111827]/90 px-3 py-1 text-[11px] text-white shadow-md">
+                            <button
+                              type="button"
+                              onClick={() => setDocumentZoom((z) => Math.max(50, z - 10))}
+                              className="flex h-6 w-6 items-center justify-center rounded-full bg-black/40 text-[14px] hover:bg-black/60"
+                            >
+                              -
+                            </button>
+                            <span className="min-w-[2.5rem] px-1 text-center">{documentZoom}%</span>
+                            <button
+                              type="button"
+                              onClick={() => setDocumentZoom((z) => Math.min(200, z + 10))}
+                              className="flex h-6 w-6 items-center justify-center rounded-full bg-black/40 text-[14px] hover:bg-black/60"
+                            >
+                              +
+                            </button>
+                          </div>
                           <button
                             type="button"
-                            className="flex h-6 w-6 items-center justify-center rounded-full bg-black/40 text-[14px]"
+                            onClick={() => setDocumentPan({ x: 0, y: 0 })}
+                            className="rounded-full bg-[#111827]/90 px-3 py-1 text-[11px] text-white shadow-md hover:bg-[#111827]"
                           >
-                            -
-                          </button>
-                          <span className="px-1">100%</span>
-                          <button
-                            type="button"
-                            className="flex h-6 w-6 items-center justify-center rounded-full bg-black/40 text-[14px]"
-                          >
-                            +
+                            Reset pan
                           </button>
                         </div>
                       </>
@@ -703,117 +747,150 @@ export default function Home() {
               </section>
 
               {/* Right column: verdict and red flags */} 
-              <aside className="w-[320px] space-y-4">
-                {/* Forensic verdict card */}
+              <aside className="w-[400px] space-y-4">
+                {/* Forensic verdict card – matches FORENSIC VERDICT design */}
                 <div
-                  className="rounded-2xl border bg-white p-5"
+                  className="rounded-2xl border bg-white p-6"
                   style={{ borderColor: COLORS.border, boxShadow: COLORS.cardShadow }}
                 >
                   <div
-                    className="mb-3 text-[11px] font-semibold uppercase tracking-wider"
+                    className="mb-5 text-[11px] font-semibold uppercase tracking-wider"
                     style={{ color: COLORS.textSecondary }}
                   >
-                    Forensic Verdict
+                    FORENSIC VERDICT
                   </div>
                   <div
-                    className="mb-3 rounded-xl px-4 py-3 text-center"
+                    className="relative w-full rounded-xl px-5 py-4 flex items-start gap-3"
                     style={{
                       backgroundColor:
                         verdict === "RED" ? "#FEE2E2" : verdict === "AMBER" ? "#FEF3C7" : "#DCFCE7",
                       color: verdict === "RED" ? "#B91C1C" : verdict === "AMBER" ? "#92400E" : "#166534",
                     }}
                   >
-                    <div className="text-[13px] font-bold tracking-wide uppercase">
-                      {primaryVerdictTitle}
-                    </div>
-                    <div className="mt-0.5 text-[11px] opacity-90">
-                      {result?.policy_result?.reason ?? secondaryVerdictSubtitle}
-                    </div>
-                    <div className="mt-2 flex justify-center">
-                      <button
-                        ref={policyDetailsAnchorRef}
-                        type="button"
-                        onClick={() => setPolicyDetailsOpen((o) => !o)}
-                        className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-medium opacity-90 hover:opacity-100"
-                        style={{
-                          borderColor: "currentColor",
-                          color: "inherit",
-                        }}
-                      >
-                        <Info className="h-3 w-3" />
-                        See Details
-                      </button>
+                    <AlertTriangle className="h-8 w-8 shrink-0 mt-0.5" strokeWidth={2.25} aria-hidden />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[17px] font-bold uppercase tracking-wide leading-tight">
+                        {primaryVerdictTitle}
+                      </div>
+                      <p className="mt-1.5 text-[12px] font-normal leading-snug">
+                        {result?.policy_result?.reason ?? secondaryVerdictSubtitle}
+                      </p>
+                      <div className="mt-3">
+                        <button
+                          ref={policyDetailsAnchorRef}
+                          type="button"
+                          onClick={() => setPolicyDetailsOpen((o) => !o)}
+                          className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-medium opacity-90 hover:opacity-100"
+                          style={{
+                            borderColor: "currentColor",
+                            color: "inherit",
+                          }}
+                        >
+                          <Info className="h-3 w-3" />
+                          See Details
+                        </button>
+                      </div>
                     </div>
                     {policyDetailsOpen && (
                       <>
                         <div
-                          className="fixed inset-0 z-10"
+                          className="fixed inset-0 z-10 bg-black/20"
                           aria-hidden
                           onClick={() => setPolicyDetailsOpen(false)}
                         />
                         <div
-                          className="relative z-20 mt-2 rounded-lg border bg-white p-3 text-left shadow-lg"
+                          className="fixed left-1/2 top-1/2 z-20 w-[90vw] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border bg-white shadow-xl"
                           style={{ borderColor: COLORS.border }}
                         >
-                          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">Recommended action</div>
-                          <p className="mt-1 text-[12px]" style={{ color: COLORS.textPrimary }}>
-                            {result?.policy_result?.action ?? "—"}
-                          </p>
-                          {(result?.policy_result?.critical_flags_hit?.length ?? 0) > 0 && (
-                            <>
-                              <div className="mt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Critical flags hit</div>
-                              <ul className="mt-1 list-inside list-disc text-[11px]" style={{ color: COLORS.textPrimary }}>
-                                {result!.policy_result!.critical_flags_hit!.map((f, i) => (
-                                  <li key={i}>{f}</li>
-                                ))}
-                              </ul>
-                            </>
-                          )}
+                          <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: COLORS.border }}>
+                            <span className="text-[13px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                              Policy details
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setPolicyDetailsOpen(false)}
+                              className="rounded p-1 hover:bg-slate-100"
+                              aria-label="Close"
+                            >
+                              <X className="h-4 w-4" style={{ color: COLORS.textSecondary }} />
+                            </button>
+                          </div>
+                          <div className="max-h-[60vh] overflow-y-auto p-4 space-y-4">
+                            <section>
+                              <h4 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: COLORS.textSecondary }}>
+                                Recommended action
+                              </h4>
+                              <p className="mt-1.5 text-[13px] leading-relaxed" style={{ color: COLORS.textPrimary }}>
+                                {result?.policy_result?.action ?? "—"}
+                              </p>
+                            </section>
+                            {(result?.policy_result?.critical_flags_hit?.length ?? 0) > 0 && (
+                              <section className="pt-3 border-t" style={{ borderColor: COLORS.border }}>
+                                <h4 className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: COLORS.textSecondary }}>
+                                  Critical flags hit
+                                </h4>
+                                <ul className="mt-1.5 space-y-1 list-none pl-0 text-[12px] leading-relaxed" style={{ color: COLORS.textPrimary }}>
+                                  {result!.policy_result!.critical_flags_hit!.map((f, i) => (
+                                    <li key={i} className="flex items-start gap-2">
+                                      <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
+                                      <span>{f}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </section>
+                            )}
+                          </div>
                         </div>
                       </>
                     )}
                   </div>
 
-                  <div className="mt-4 grid grid-cols-2 gap-3">
-                    <div className="rounded-lg bg-[#F8F9FA] px-3 py-2.5">
+                  <div className="mt-5 grid grid-cols-2 gap-3 min-w-0">
+                    <div className="min-w-0 flex flex-col rounded-lg border bg-white px-3 py-2.5 text-left" style={{ borderColor: COLORS.border }}>
                       <div
-                        className="text-[10px] font-semibold uppercase tracking-wider"
+                        className="text-[9px] font-semibold uppercase tracking-wider leading-tight"
                         style={{ color: COLORS.textSecondary }}
                       >
                         Forgery Probability
                       </div>
-                      <div className="mt-1 text-[22px] font-bold" style={{ color: COLORS.textPrimary }}>
-                        {result!.forgery_score}
-                        <span className="text-[14px] font-normal" style={{ color: COLORS.textSecondary }}>
-                          {" "}
+                      <div className="mt-2 flex w-full items-baseline gap-0.5">
+                        <span className="shrink-0 text-[18px] font-bold tabular-nums" style={{ color: COLORS.textPrimary }}>
+                          {result!.forgery_score}
+                        </span>
+                        <span className="shrink-0 text-[10px] font-normal" style={{ color: COLORS.textSecondary }}>
                           /100
                         </span>
                       </div>
+                      <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-red-500 transition-[width]"
+                          style={{ width: `${Math.min(100, Math.max(0, result!.forgery_score))}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="rounded-lg bg-[#F8F9FA] px-3 py-2.5">
+                    <div className="min-w-0 flex flex-col rounded-lg border bg-white px-3 py-2.5 text-left" style={{ borderColor: COLORS.border }}>
                       <div
-                        className="text-[10px] font-semibold uppercase tracking-wider"
+                        className="text-[9px] font-semibold uppercase tracking-wider leading-tight"
                         style={{ color: COLORS.textSecondary }}
                       >
                         Trust Score
                       </div>
-                      <div className="mt-1 text-[22px] font-bold" style={{ color: COLORS.textPrimary }}>
-                        {result!.trust_score}
-                        <span className="text-[14px] font-normal" style={{ color: COLORS.textSecondary }}>
-                          {" "}
+                      <div className="mt-2 flex w-full items-baseline gap-0.5">
+                        <span className="shrink-0 text-[18px] font-bold tabular-nums" style={{ color: COLORS.textPrimary }}>
+                          {result!.trust_score}
+                        </span>
+                        <span className="shrink-0 text-[10px] font-normal" style={{ color: COLORS.textSecondary }}>
                           /100
                         </span>
                       </div>
+                      <div className="mt-2 h-1.5 w-full rounded-full bg-slate-200 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-green-500 transition-[width]"
+                          style={{ width: `${Math.min(100, Math.max(0, result!.trust_score))}%` }}
+                        />
+                      </div>
                     </div>
                   </div>
-
-                  <button
-                    type="button"
-                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-full bg-[#111827] px-4 py-2 text-[12px] font-medium text-white shadow-sm transition hover:bg-black"
-                  >
-                    <FileStack className="h-4 w-4" />
-                    Copy Forensic Report
-                  </button>
                 </div>
 
                 {/* Critical red flags & AI confidence */} 
@@ -1096,6 +1173,78 @@ export default function Home() {
             </div>
           )}
         </div>
+
+        {/* Profile drawer - available from sidebar on any view */}
+        {profileOpen && (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-black/40"
+              aria-hidden
+              onClick={() => setProfileOpen(false)}
+            />
+            <div
+              className="fixed right-0 top-0 z-50 flex h-full w-full max-w-md flex-col border-l bg-white shadow-xl"
+              style={{ borderColor: COLORS.border }}
+            >
+              <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: COLORS.border }}>
+                <h3 className="text-[14px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                  Profile
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => setProfileOpen(false)}
+                  className="rounded p-1 hover:bg-slate-100"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4 space-y-5">
+                <section className="flex flex-col items-center pt-2">
+                  <div
+                    className="flex h-16 w-16 items-center justify-center rounded-full text-[20px] font-semibold"
+                    style={{ backgroundColor: COLORS.purpleLight, color: COLORS.purple }}
+                  >
+                    {profileInitials}
+                  </div>
+                  <p className="mt-2 text-[11px]" style={{ color: COLORS.textSecondary }}>
+                    Initials from your display name
+                  </p>
+                </section>
+                <section>
+                  <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
+                    Display name
+                  </h4>
+                  <input
+                    type="text"
+                    value={userProfile.displayName}
+                    onChange={(e) => setUserProfile((p) => ({ ...p, displayName: e.target.value }))}
+                    placeholder="Your name"
+                    className="w-full rounded-md border bg-[#F1F3F5] px-3 py-2 text-[13px] outline-none focus:ring-1"
+                    style={{ borderColor: COLORS.borderDark, color: COLORS.textPrimary }}
+                  />
+                </section>
+                <section>
+                  <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
+                    Role
+                  </h4>
+                  <input
+                    type="text"
+                    value={userProfile.role}
+                    onChange={(e) => setUserProfile((p) => ({ ...p, role: e.target.value }))}
+                    placeholder="e.g. Senior Ops Analyst"
+                    className="w-full rounded-md border bg-[#F1F3F5] px-3 py-2 text-[13px] outline-none focus:ring-1"
+                    style={{ borderColor: COLORS.borderDark, color: COLORS.textPrimary }}
+                  />
+                </section>
+                <section>
+                  <p className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+                    Changes are saved automatically and reflected in the sidebar.
+                  </p>
+                </section>
+              </div>
+            </div>
+          </>
+        )}
       </main>
     </div>
   );
