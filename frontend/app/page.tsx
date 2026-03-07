@@ -187,6 +187,7 @@ export default function Home() {
   const [extractedTextModalOpen, setExtractedTextModalOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [userProfile, setUserProfile] = useState({ displayName: "Sarah Jenkins", role: "Senior Ops Analyst" });
+  const [scoreInfoPopover, setScoreInfoPopover] = useState<"forgery" | "trust" | null>(null);
   const policyDetailsAnchorRef = useRef<HTMLButtonElement>(null);
 
   const profileInitials = userProfile.displayName
@@ -993,10 +994,23 @@ export default function Home() {
                   <div className="mt-5 grid grid-cols-2 gap-3 min-w-0">
                     <div className="min-w-0 flex flex-col rounded-lg border bg-white px-3 py-2.5 text-left" style={{ borderColor: COLORS.border }}>
                       <div
-                        className="text-[9px] font-semibold uppercase tracking-wider leading-tight"
+                        className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider leading-tight"
                         style={{ color: COLORS.textSecondary }}
                       >
-                        Forgery Probability
+                        <span>Forgery Probability</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            setScoreInfoPopover((v) => (v === "forgery" ? null : "forgery"));
+                          }}
+                          className="shrink-0 cursor-help rounded p-0.5 opacity-70 hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-offset-0"
+                          style={{ color: COLORS.textSecondary }}
+                          title="What does Forgery Probability mean?"
+                          aria-label="Explain forgery probability"
+                        >
+                          <Info className="h-3 w-3" />
+                        </button>
                       </div>
                       <div className="mt-2 flex w-full items-baseline gap-0.5">
                         <span className="shrink-0 text-[18px] font-bold tabular-nums" style={{ color: COLORS.textPrimary }}>
@@ -1015,10 +1029,23 @@ export default function Home() {
                     </div>
                     <div className="min-w-0 flex flex-col rounded-lg border bg-white px-3 py-2.5 text-left" style={{ borderColor: COLORS.border }}>
                       <div
-                        className="text-[9px] font-semibold uppercase tracking-wider leading-tight"
+                        className="flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wider leading-tight"
                         style={{ color: COLORS.textSecondary }}
                       >
-                        Trust Score
+                        <span>Trust Score</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            setScoreInfoPopover((v) => (v === "trust" ? null : "trust"));
+                          }}
+                          className="shrink-0 cursor-help rounded p-0.5 opacity-70 hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-offset-0"
+                          style={{ color: COLORS.textSecondary }}
+                          title="What does Trust Score mean?"
+                          aria-label="Explain trust score"
+                        >
+                          <Info className="h-3 w-3" />
+                        </button>
                       </div>
                       <div className="mt-2 flex w-full items-baseline gap-0.5">
                         <span className="shrink-0 text-[18px] font-bold tabular-nums" style={{ color: COLORS.textPrimary }}>
@@ -1036,6 +1063,33 @@ export default function Home() {
                       </div>
                     </div>
                   </div>
+
+                  {/* Score info popover (click-to-show) */}
+                  {scoreInfoPopover && (
+                    <div
+                      className="mt-3 rounded-lg border px-3 py-2.5 text-left"
+                      style={{ borderColor: COLORS.border, backgroundColor: COLORS.purpleLight }}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-[12px] leading-snug" style={{ color: COLORS.textPrimary }}>
+                          {scoreInfoPopover === "forgery" ? (
+                            <>Forgery probability means the likelihood that the document has been digitally altered or fabricated—through metadata changes, pixel manipulation, or content edits. Higher score = more signs of forgery.</>
+                          ) : (
+                            <>Trust score means how reliable the document appears based on consistency of metadata, file structure, and forensic analysis. Higher score = more trustworthy.</>
+                          )}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setScoreInfoPopover(null)}
+                          className="shrink-0 rounded p-0.5 hover:bg-white/50"
+                          aria-label="Close"
+                        >
+                          <X className="h-4 w-4" style={{ color: COLORS.textSecondary }} />
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                 </div>
 
                 {/* Critical red flags & AI confidence */} 
