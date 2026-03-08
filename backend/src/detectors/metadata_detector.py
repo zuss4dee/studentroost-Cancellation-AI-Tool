@@ -10,6 +10,25 @@ from PIL.ExifTags import TAGS
 from io import BytesIO
 from datetime import datetime
 
+# Software signatures to search for in raw file binary (aggressive clean-render detection)
+BINARY_SOFTWARE_SIGNATURES = [
+    'Photopea', 'Canva', 'Adobe', 'Photoshop', 'GIMP', 'Figma'
+]
+
+# Common mobile/screenshot resolutions (width, height) - portrait or landscape
+COMMON_SCREENSHOT_RESOLUTIONS = [
+    (1170, 2532), (2532, 1170), (1284, 2778), (2778, 1284), (1080, 2340), (2340, 1080),
+    (1125, 2436), (2436, 1125), (828, 1792), (1792, 828), (1242, 2688), (2688, 1242),
+    (750, 1334), (1334, 750), (1080, 1920), (1920, 1080), (1440, 2560), (2560, 1440),
+    (720, 1280), (1280, 720), (1080, 2400), (2400, 1080), (1080, 2220), (2220, 1080),
+]
+
+# Aspect ratio (width/height) for common screenshot ratios - with small tolerance
+SCREENSHOT_ASPECT_RATIOS = [
+    (16, 9),   # 16:9 ≈ 1.778
+    (19.5, 9), # 19.5:9 ≈ 2.167
+]
+
 
 class MetadataDetector:
     """Detects fraud indicators through metadata analysis."""
@@ -45,6 +64,47 @@ class MetadataDetector:
         # Document types
         'cas', 'confirmation of acceptance for studies'
     ]
+    
+    def _scan_raw_binary(self, file_bytes):
+        """
+        Search raw file bytes for hidden software signatures (e.g. Photopea, Canva).
+        Used to catch aggressive 'clean renders' that strip EXIF but leave binary strings.
+        
+        Args:
+            file_bytes: Raw bytes of the file
+            
+        Returns:
+            tuple: (list of flag strings, int risk delta)
+        """
+        flags = []
+        risk_delta = 0
+        if not file_bytes:
+            return flags, risk_delta
+        for name in BINARY_SOFTWARE_SIGNATURES:
+            try:
+                needle = name.encode('utf-8')
+            except Exception:
+                continue
+            if needle in file_bytes:
+                flags.append(f'Hidden software signature found in file binary: {name}')
+                risk_delta += 40
+        return flags, risk_delta
+    
+    def _check_screenshot_resolution(self, width, height):
+        """
+        Return True if dimensions match common mobile/screenshot resolutions or 16:9 / 19.5:9.
+        """
+        if width <= 0 or height <= 0:
+            return False
+        size = (width, height)
+        if size in COMMON_SCREENSHOT_RESOLUTIONS:
+            return True
+        ratio = width / height
+        for num, den in SCREENSHOT_ASPECT_RATIOS:
+            target = num / den
+            if abs(ratio - target) < 0.01:
+                return True
+        return False
     
     def analyze(self, file_stream, file_type, filename=''):
         """
@@ -195,11 +255,17 @@ class MetadataDetector:
         risk_score = 0
         trust_score = 85  # Default high trust (assumes no manipulation until proven otherwise)
         
-        # Reset stream position
+        # Reset stream position and read bytes once (for binary scan and PDF open)
         file_stream.seek(0)
+        file_bytes = file_stream.read()
+        
+        # Deep binary signature search (aggressive clean-render detection)
+        binary_flags, binary_risk = self._scan_raw_binary(file_bytes)
+        flags.extend(binary_flags)
+        risk_score += binary_risk
         
         # Open PDF with PyMuPDF
-        pdf_doc = fitz.open(stream=file_stream.read(), filetype="pdf")
+        pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
         metadata = pdf_doc.metadata
         
         raw_data['pdf_metadata'] = metadata
@@ -444,11 +510,15 @@ class MetadataDetector:
         risk_score = 0
         trust_score = 85  # Default high trust (assumes no manipulation until proven otherwise)
         
-        # Reset stream position
+        # Reset stream position and read bytes once (for binary scan and image open)
         file_stream.seek(0)
+        file_bytes = file_stream.read()
+        image = Image.open(BytesIO(file_bytes))
         
-        # Open image with PIL
-        image = Image.open(file_stream)
+        # Deep binary signature search (aggressive clean-render detection)
+        binary_flags, binary_risk = self._scan_raw_binary(file_bytes)
+        flags.extend(binary_flags)
+        risk_score += binary_risk
         
         # Extract EXIF data
         exif_data = image.getexif()
@@ -461,6 +531,22 @@ class MetadataDetector:
                 raw_data[tag] = str(value)
         
         raw_data['exif_data'] = exif_dict
+        
+        # Missing EXIF penalty (images only): JPEG/PNG with no EXIF is suspicious
+        format_upper = (image.format or '').upper()
+        is_jpeg_or_png = format_upper in ('JPEG', 'JPG', 'PNG')
+        exif_empty = exif_data is None or len(exif_data) == 0
+        if is_jpeg_or_png and exif_empty:
+            flags.append('EXIF metadata entirely stripped or missing (High probability of screenshot or web-export)')
+            risk_score += 25
+        
+        # Screenshot resolution trap (images only)
+        width, height = image.size
+        raw_data['width'] = width
+        raw_data['height'] = height
+        if self._check_screenshot_resolution(width, height):
+            flags.append('Image dimensions match standard mobile screenshot resolutions')
+            risk_score += 20
         
         # Check Software tag
         software = exif_dict.get('Software', '').lower()
