@@ -86,7 +86,7 @@ class MetadataDetector:
             except Exception:
                 continue
             if needle in file_bytes:
-                flags.append(f'Hidden software signature found in file binary: {name}')
+                flags.append(f'Hidden Editing Software Detected ({name})')
                 risk_delta += 40
         return flags, risk_delta
     
@@ -105,6 +105,19 @@ class MetadataDetector:
             if abs(ratio - target) < 0.01:
                 return True
         return False
+    
+    # Keys shown in File DNA / dashboard; empty values become user-friendly placeholder
+    FILE_DNA_DISPLAY_KEYS = ('author', 'creator', 'producer', 'creation_date', 'modification_date', 'software')
+    UNKNOWN_PLACEHOLDER = 'Unknown (Data Stripped)'
+    
+    def _sanitize_raw_data_for_display(self, raw_data):
+        """Replace None or empty string in display keys so frontend doesn't show blank."""
+        for key in self.FILE_DNA_DISPLAY_KEYS:
+            if key not in raw_data:
+                continue
+            val = raw_data[key]
+            if val is None or (isinstance(val, str) and val.strip() == ''):
+                raw_data[key] = self.UNKNOWN_PLACEHOLDER
     
     def analyze(self, file_stream, file_type, filename=''):
         """
@@ -274,10 +287,18 @@ class MetadataDetector:
         raw_data['author'] = (metadata.get('author') or '').strip() or None
         raw_data['creator'] = (metadata.get('creator') or '').strip() or None
         raw_data['producer'] = (metadata.get('producer') or '').strip() or None
+        raw_data['creation_date'] = (metadata.get('creationDate') or '').strip() or None
+        raw_data['modification_date'] = (metadata.get('modDate') or '').strip() or None
         
         # Check metadata completeness
         completeness = self._check_metadata_completeness(metadata)
         raw_data['metadata_completeness'] = completeness
+        
+        # Critical red flag: PDF metadata completely empty (no producer / no creation dates)
+        has_no_producer = not (raw_data.get('producer') or '').strip()
+        has_no_creation = not (raw_data.get('creation_date') or '').strip()
+        if has_no_producer and has_no_creation:
+            flags.append('Metadata intentionally stripped or hidden')
         
         # Extract text from PDF for alternative analysis (do this BEFORE metadata check to inform risk scoring)
         institutional_indicators = []
@@ -494,6 +515,7 @@ class MetadataDetector:
             # No issues found
             trust_score = 85  # High trust - no manipulation indicators found
         
+        self._sanitize_raw_data_for_display(raw_data)
         pdf_doc.close()
         
         return {
@@ -536,8 +558,10 @@ class MetadataDetector:
         format_upper = (image.format or '').upper()
         is_jpeg_or_png = format_upper in ('JPEG', 'JPG', 'PNG')
         exif_empty = exif_data is None or len(exif_data) == 0
+        if exif_empty:
+            flags.append('Metadata intentionally stripped or hidden')
         if is_jpeg_or_png and exif_empty:
-            flags.append('EXIF metadata entirely stripped or missing (High probability of screenshot or web-export)')
+            flags.append('Missing File History (Metadata Stripped)')
             risk_score += 25
         
         # Screenshot resolution trap (images only)
@@ -545,7 +569,7 @@ class MetadataDetector:
         raw_data['width'] = width
         raw_data['height'] = height
         if self._check_screenshot_resolution(width, height):
-            flags.append('Image dimensions match standard mobile screenshot resolutions')
+            flags.append('Screenshot Format Detected')
             risk_score += 20
         
         # Check Software tag
@@ -591,6 +615,7 @@ class MetadataDetector:
         else:
             trust_score = 85  # High trust - no manipulation indicators found
         
+        self._sanitize_raw_data_for_display(raw_data)
         image.close()
         
         return {
