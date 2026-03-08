@@ -125,7 +125,7 @@ export default function Home() {
       form.append("file", file);
       form.append("doc_type_key", docTypeKey);
       try {
-        const res = await fetch("http://localhost:8000/api/analyze", {
+        const res = await fetch("https://studentroost-cancellation-ai-tool.onrender.com/api/analyze", {
           method: "POST",
           body: form,
         });
