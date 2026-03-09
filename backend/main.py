@@ -379,30 +379,16 @@ async def analyze_document(file: UploadFile = File(...), doc_type_key: str = For
         if supabase is not None:
             try:
                 verdict = (policy_result or {}).get("verdict", "")
-                # Request the inserted row back so we can capture its ID for the frontend
-                resp = (
-                    supabase.table("scans")
-                    .insert(
-                        {
-                            "filename": file.filename or out.get("filename", ""),
-                            "doc_type": doc_type_key,
-                            "verdict": verdict,
-                            "forgery_score": forgery_score,
-                            "trust_score": trust_score,
-                            "red_flags": red_flags,
-                        }
-                    )
-                    .select("id")
-                    .execute()
-                )
-                data = getattr(resp, "data", None)
-                if isinstance(data, list) and data:
-                    first = data[0]
-                    try:
-                        out["db_id"] = first.get("id")
-                    except AttributeError:
-                        # Row may be a dict-like object without .get
-                        out["db_id"] = first["id"]
+                supabase.table("scans").insert(
+                    {
+                        "filename": file.filename or out.get("filename", ""),
+                        "doc_type": doc_type_key,
+                        "verdict": verdict,
+                        "forgery_score": forgery_score,
+                        "trust_score": trust_score,
+                        "red_flags": red_flags,
+                    }
+                ).execute()
             except Exception as e:
                 print(f"SUPABASE ERROR: {e}")
                 logging.exception("Supabase insert failed: %s", e)

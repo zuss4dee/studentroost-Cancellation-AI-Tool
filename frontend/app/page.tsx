@@ -83,7 +83,6 @@ interface AnalyzeResponse {
   ai_indicators?: string[];
   extracted_text?: string;
   noise_findings?: string;
-  db_id?: number | string;
 }
 
 export default function Home() {
@@ -111,7 +110,6 @@ export default function Home() {
     { id: string; filename: string; verdict: string | null; created_at: string | null }[]
   >([]);
   const [loadingText, setLoadingText] = useState("Encrypting & Uploading...");
-   const [isFeedbackSubmitted, setIsFeedbackSubmitted] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -178,45 +176,6 @@ export default function Home() {
     return () => clearTimeout(timer);
   }, [isLoading]);
 
-  const handleHumanFeedback = useCallback(
-    async (status: "GENUINE" | "FAKE") => {
-      // Debug: inspect the current result object
-      // eslint-disable-next-line no-console
-      console.log("Current result object:", result);
-
-      if (!supabase) {
-        // eslint-disable-next-line no-alert
-        alert("Supabase client is not available in this environment.");
-        return;
-      }
-
-      if (!result?.db_id) {
-        // eslint-disable-next-line no-alert
-        alert("Error: No database ID found for this scan.");
-        return;
-      }
-
-      try {
-        const { error } = await supabase
-          .from("scans")
-          .update({ human_feedback: status })
-          .eq("id", result.db_id);
-
-        if (error) {
-          throw error;
-        }
-
-        setIsFeedbackSubmitted(true);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error("Supabase update failed:", err);
-        // eslint-disable-next-line no-alert
-        alert("Failed to save feedback to database.");
-      }
-    },
-    [result],
-  );
-
   const handleResetScan = useCallback(() => {
     setResult(null);
     setActiveView("landing");
@@ -231,7 +190,6 @@ export default function Home() {
     setPolicyDetailsOpen(false);
     setRedFlagsModalOpen(false);
     setExtractedTextModalOpen(false);
-    setIsFeedbackSubmitted(false);
   }, []);
   const handleUpload = useCallback(
     async (file: File) => {
@@ -256,10 +214,6 @@ export default function Home() {
           throw new Error(err.detail ?? `Request failed: ${res.status}`);
         }
         const data: AnalyzeResponse = await res.json();
-        // Debug: inspect the raw backend response including db_id
-        // eslint-disable-next-line no-console
-        console.log("Raw Backend Response:", data);
-        setIsFeedbackSubmitted(false);
         setResult(data);
         setActiveView("result");
       } catch (e) {
@@ -1228,49 +1182,7 @@ export default function Home() {
 
                 </div>
 
-                {/* Human Verification */}
-                <div
-                  className="rounded-2xl border bg-white p-5"
-                  style={{ borderColor: COLORS.border, boxShadow: COLORS.cardShadow }}
-                >
-                  <div
-                    className="mb-3 text-[11px] font-semibold uppercase tracking-wider"
-                    style={{ color: COLORS.textSecondary }}
-                  >
-                    Human Verification
-                  </div>
-                  {isFeedbackSubmitted ? (
-                    <div className="flex items-center gap-2 text-[12px]" style={{ color: "#16A34A" }}>
-                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-green-100 text-green-700 text-[11px]">
-                        ✓
-                      </span>
-                      <span>Feedback Saved!</span>
-                    </div>
-                  ) : (
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleHumanFeedback("GENUINE")}
-                        className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-1.5 text-[12px] font-medium transition hover:bg-green-50"
-                        style={{ borderColor: "#D1FAE5", color: "#166534", backgroundColor: "#ECFDF3" }}
-                      >
-                        <span>👍</span>
-                        <span>Confirm Real Document</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleHumanFeedback("FAKE")}
-                        className="flex-1 inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-1.5 text-[12px] font-medium transition hover:bg-red-50"
-                        style={{ borderColor: "#FECACA", color: "#B91C1C", backgroundColor: "#FEF2F2" }}
-                      >
-                        <span>🚩</span>
-                        <span>Confirm Fake Document</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* Critical red flags & AI confidence */}
+                {/* Critical red flags & AI confidence */} 
                 <div
                   className="rounded-2xl border bg-white p-5"
                   style={{ borderColor: COLORS.border, boxShadow: COLORS.cardShadow }}
