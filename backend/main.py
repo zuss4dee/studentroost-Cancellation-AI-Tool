@@ -1,9 +1,14 @@
 import base64
+import logging
+import os
 from datetime import datetime
 from io import BytesIO
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from dotenv import load_dotenv
 
 import fitz  # PyMuPDF
+from supabase import create_client, Client
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
@@ -33,6 +38,20 @@ app.add_middleware(
 
 
 policy_engine = PolicyEngine()
+
+# Load .env from backend folder so SUPABASE_URL and SUPABASE_KEY are available
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
+print("--- STARTUP CHECK ---")
+print(f"SUPABASE_URL found: {bool(os.getenv('SUPABASE_URL'))}")
+print(f"SUPABASE_KEY found: {bool(os.getenv('SUPABASE_KEY'))}")
+
+# Supabase client (optional: only if env vars set)
+_supabase_url = os.getenv("SUPABASE_URL")
+_supabase_key = os.getenv("SUPABASE_KEY")
+supabase: Optional[Client] = None
+if _supabase_url and _supabase_key:
+    supabase = create_client(_supabase_url, _supabase_key)
 
 
 def pdf_to_image(pdf_bytes: bytes) -> Image.Image:
@@ -350,6 +369,30 @@ async def analyze_document(file: UploadFile = File(...), doc_type_key: str = For
             out["ai_confidence"] = ai_confidence
         if ai_indicators:
             out["ai_indicators"] = ai_indicators
+
+        # Persist scan result to Supabase (non-blocking; do not fail the request)
+        print("--- PREPARING DATABASE INSERT ---")
+        if supabase is None:
+            print("WARNING: Supabase client is None! Skipping insert.")
+        else:
+            print("Supabase client exists. Attempting insert...")
+        if supabase is not None:
+            try:
+                verdict = (policy_result or {}).get("verdict", "")
+                supabase.table("scans").insert(
+                    {
+                        "filename": file.filename or out.get("filename", ""),
+                        "doc_type": doc_type_key,
+                        "verdict": verdict,
+                        "forgery_score": forgery_score,
+                        "trust_score": trust_score,
+                        "red_flags": red_flags,
+                    }
+                ).execute()
+            except Exception as e:
+                print(f"SUPABASE ERROR: {e}")
+                logging.exception("Supabase insert failed: %s", e)
+
         return out
     except HTTPException:
         raise
