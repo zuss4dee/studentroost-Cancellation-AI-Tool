@@ -15,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { supabase } from "../src/lib/supabaseClient";
 
 const MAX_FILE_SIZE_MB = 200;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
@@ -105,12 +106,91 @@ export default function Home() {
   const dismissToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((x) => x.id !== id));
   }, []);
-  const [recentScans] = useState<{ name: string; ago: string; status: "red" | "green" | "orange" }[]>([
-    { name: "Visa_Refusal_2024.pdf", ago: "2 mins ago", status: "red" },
-    { name: "Med_Note_J_Doe.jpg", ago: "1 hour ago", status: "green" },
-    { name: "Uni_Letter_V2.pdf", ago: "3 hours ago", status: "orange" },
-  ]);
+  const [recentScans, setRecentScans] = useState<
+    { id: string; filename: string; verdict: string | null; created_at: string | null }[]
+  >([]);
+  const [loadingText, setLoadingText] = useState("Encrypting & Uploading...");
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRecentScans() {
+      if (!supabase) return;
+      try {
+        const { data, error } = await supabase
+          .from("scans")
+          .select("id, filename, verdict, created_at")
+          .order("created_at", { ascending: false })
+          .limit(5);
+        if (error) {
+          // eslint-disable-next-line no-console
+          console.error("Failed to fetch recent scans:", error);
+          return;
+        }
+        if (!cancelled && data) {
+          setRecentScans(
+            data.map((row: any) => ({
+              id: String(row.id),
+              filename: row.filename ?? "Untitled document",
+              verdict: row.verdict ?? null,
+              created_at: row.created_at ?? null,
+            })),
+          );
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error("Unexpected error loading recent scans:", e);
+      }
+    }
+    loadRecentScans();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const formatTimeAgo = useCallback((iso: string | null | undefined): string => {
+    if (!iso) return "Just now";
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return "Just now";
+    const diffMs = Date.now() - then;
+    const seconds = Math.max(0, Math.floor(diffMs / 1000));
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    if (seconds < 60) return "Just now";
+    if (minutes < 60) return `${minutes} min${minutes === 1 ? "" : "s"} ago`;
+    if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+    return `${days} day${days === 1 ? "" : "s"} ago`;
+  }, []);
+
+  const isLoading = isUploading;
+
+  useEffect(() => {
+    if (!isLoading) {
+      setLoadingText("Encrypting & Uploading...");
+      return;
+    }
+    setLoadingText("Encrypting & Uploading...");
+    const timer = setTimeout(() => {
+      setLoadingText("Running Forensic ELA Analysis...");
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [isLoading]);
+
+  const handleResetScan = useCallback(() => {
+    setResult(null);
+    setActiveView("landing");
+    setIsUploading(false);
+    setIsDragging(false);
+    setUploadError(null);
+    setDocTab("original");
+    setDocumentZoom(100);
+    setDocumentPan({ x: 0, y: 0 });
+    setIsPanning(false);
+    setForensicDrawerOpen(false);
+    setPolicyDetailsOpen(false);
+    setRedFlagsModalOpen(false);
+    setExtractedTextModalOpen(false);
+  }, []);
   const handleUpload = useCallback(
     async (file: File) => {
       setUploadError(null);
@@ -405,36 +485,46 @@ export default function Home() {
           >
             Recent Scans
           </div>
-          <ul className="space-y-0.5">
-            {recentScans.map((scan) => (
-              <li
-                key={scan.name}
-                className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors transition-shadow hover:bg-slate-50 hover:shadow-sm"
-              >
-                <FileText className="h-4 w-4 shrink-0" style={{ color: COLORS.textSecondary }} />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[13px]" style={{ color: COLORS.textPrimary }}>
-                    {scan.name}
-                  </div>
-                  <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
-                    {scan.ago}
-                  </div>
-                </div>
-                <span
-                  className="h-2 w-2 shrink-0 rounded-full"
-                  style={{
-                    backgroundColor:
-                      scan.status === "red"
-                        ? "#EF4444"
-                        : scan.status === "green"
-                          ? "#22C55E"
-                          : "#F59E0B",
-                  }}
-                  title={scan.status}
-                />
-              </li>
-            ))}
-          </ul>
+          {recentScans.length === 0 ? (
+            <p className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+              No scans yet. Your last 5 scans will appear here.
+            </p>
+          ) : (
+            <ul className="space-y-0.5">
+              {recentScans.map((scan) => {
+                const verdict = (scan.verdict || "").toUpperCase();
+                const color =
+                  verdict === "RED"
+                    ? "#EF4444"
+                    : verdict === "GREEN"
+                      ? "#22C55E"
+                      : verdict === "AMBER"
+                        ? "#F59E0B"
+                        : "#9CA3AF"; // default gray
+                return (
+                  <li
+                    key={scan.id}
+                    className="flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors transition-shadow hover:bg-slate-50 hover:shadow-sm"
+                  >
+                    <FileText className="h-4 w-4 shrink-0" style={{ color: COLORS.textSecondary }} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[13px]" style={{ color: COLORS.textPrimary }}>
+                        {scan.filename}
+                      </div>
+                      <div className="text-[11px]" style={{ color: COLORS.textSecondary }}>
+                        {formatTimeAgo(scan.created_at)}
+                      </div>
+                    </div>
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: color }}
+                      title={verdict || "Unknown"}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
 
         {/* User profile - clickable to open profile drawer */}
@@ -1142,8 +1232,8 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* Toggle for forensic report drawer */}
-                <div className="flex justify-end">
+                {/* Toggle for forensic report drawer + reset button */}
+                <div className="mt-1 flex justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setForensicDrawerOpen(true)}
@@ -1153,6 +1243,15 @@ export default function Home() {
                     <FileStack className="h-4 w-4" />
                     Forensic Report
                     <ChevronRight className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResetScan}
+                    className="inline-flex items-center gap-1 rounded-lg border px-3 py-2 text-[12px] font-medium transition hover:bg-slate-50"
+                    style={{ borderColor: COLORS.border, color: COLORS.purple }}
+                  >
+                    <PlusSquare className="h-4 w-4" style={{ color: COLORS.purple }} />
+                    Scan Another Document
                   </button>
                 </div>
               </aside>
@@ -1445,6 +1544,20 @@ export default function Home() {
           </>
         )}
       </main>
+      {isLoading && (
+        <div className="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-white/80 backdrop-blur-md transition-all duration-300">
+          <div className="loadingspinner mb-8">
+            <div id="square1"></div>
+            <div id="square2"></div>
+            <div id="square3"></div>
+            <div id="square4"></div>
+            <div id="square5"></div>
+          </div>
+          <div className="text-lg font-bold text-gray-800 animate-pulse mt-6 tracking-wide">
+            {loadingText}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
