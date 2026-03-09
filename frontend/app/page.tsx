@@ -419,7 +419,7 @@ export default function Home() {
             onDrop={onDrop}
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}
-            className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed py-7 transition-colors ${
+            className={`flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed py-7 transition-colors transition-transform shadow-sm hover:shadow-md hover:-translate-y-[1px] ${
               isUploading ? "pointer-events-none opacity-60" : ""
             }`}
             style={{
