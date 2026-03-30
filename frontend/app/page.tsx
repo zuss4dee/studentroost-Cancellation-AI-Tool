@@ -969,13 +969,50 @@ export default function Home() {
                               className="flex h-64 w-full items-center justify-center rounded-xl border bg-gradient-to-br from-slate-900 via-rose-500 to-amber-400 text-[12px] font-medium text-white"
                               style={{ borderColor: COLORS.border }}
                             >
-                              ELA heatmap – bright regions may indicate digital manipulation.
+                              ELA heatmap — bright regions may indicate digital manipulation.
                             </div>
                           )}
                         </div>
-                        <p className="mt-3 text-center text-[11px] text-slate-600">
-                          Error Level Analysis: dark areas are consistent, bright areas highlight potential edits.
-                        </p>
+
+                        {/* Minimal heatmap legend */}
+                        <div
+                          className="mt-2 flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[11px]"
+                          style={{ color: COLORS.textSecondary }}
+                        >
+                          <div className="flex items-center gap-1">
+                            <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: "#3b4cc0" }} />
+                            <span>Clean</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: "#62d04f" }} />
+                            <span>Mild anomaly</span>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ backgroundColor: "#ee4343" }} />
+                            <span>Manipulation</span>
+                          </div>
+                          <span className="ml-auto italic opacity-70">ELA · Noise · DCT fusion</span>
+                        </div>
+
+                        {/* Suspicious regions summary */}
+                        {(result as any)?.suspicious_regions?.length > 0 && (
+                          <div
+                            className="mt-2 w-full rounded-lg border px-3 py-2"
+                            style={{ borderColor: "#fecaca", backgroundColor: "#fef2f2" }}
+                          >
+                            <p className="text-[11px] font-semibold" style={{ color: "#b91c1c" }}>
+                              {(result as any).suspicious_regions.length} suspicious region
+                              {(result as any).suspicious_regions.length > 1 ? "s" : ""} detected
+                            </p>
+                            <ul className="mt-1 space-y-0.5">
+                              {(result as any).suspicious_regions.slice(0, 3).map((r: any, i: number) => (
+                                <li key={i} className="text-[11px]" style={{ color: "#991b1b" }}>
+                                  Region {i + 1}: {r.w}×{r.h}px at ({r.x}, {r.y}) — {r.confidence}% confidence
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
