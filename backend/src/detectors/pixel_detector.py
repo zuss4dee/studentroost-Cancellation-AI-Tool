@@ -273,7 +273,8 @@ class PixelDetector:
         findings = []
 
         img_array = np.array(image.convert('L'), dtype=np.float32)
-        laplacian = cv2.Laplacian(img_array, cv2.CV_64F)
+        # OpenCV 4.13+ rejects Laplacian float32→float64; use float64 input with CV_64F
+        laplacian = cv2.Laplacian(np.asarray(img_array, dtype=np.float64), cv2.CV_64F)
         variance = float(laplacian.var())
 
         if variance < 100:
