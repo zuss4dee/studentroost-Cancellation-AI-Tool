@@ -14,7 +14,7 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 
 const MAX_FILE_SIZE_MB = 200;
@@ -66,6 +66,81 @@ interface DetectorSummaryItem {
   risk_score?: number;
 }
 
+/** Bounding boxes from pixel fusion (same pixel space as ELA heatmap / source image). */
+interface SuspiciousRegion {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  confidence: number;
+}
+
+function ElaHeatmapWithBoxes({
+  base64,
+  regions,
+}: {
+  base64: string;
+  regions: SuspiciousRegion[] | undefined;
+}) {
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [layout, setLayout] = useState<{ ox: number; oy: number; scale: number } | null>(null);
+
+  const updateLayout = useCallback(() => {
+    const img = imgRef.current;
+    if (!img?.naturalWidth) return;
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    const cw = img.clientWidth;
+    const ch = img.clientHeight;
+    if (cw < 1 || ch < 1) return;
+    const scale = Math.min(cw / nw, ch / nh);
+    const rw = nw * scale;
+    const rh = nh * scale;
+    const ox = (cw - rw) / 2;
+    const oy = (ch - rh) / 2;
+    setLayout({ ox, oy, scale });
+  }, []);
+
+  useLayoutEffect(() => {
+    updateLayout();
+  }, [base64, updateLayout]);
+
+  useEffect(() => {
+    const img = imgRef.current;
+    if (!img) return;
+    const ro = new ResizeObserver(() => updateLayout());
+    ro.observe(img);
+    return () => ro.disconnect();
+  }, [updateLayout]);
+
+  return (
+    <div className="relative h-full w-full">
+      <img
+        ref={imgRef}
+        src={`data:image/png;base64,${base64}`}
+        alt="ELA heatmap"
+        className="h-full w-full object-contain"
+        onLoad={updateLayout}
+      />
+      {layout &&
+        regions?.map((r, i) => (
+          <div
+            key={`${r.x}-${r.y}-${i}`}
+            className="pointer-events-none absolute rounded-sm border-2 border-red-500"
+            style={{
+              left: layout.ox + r.x * layout.scale,
+              top: layout.oy + r.y * layout.scale,
+              width: Math.max(r.w * layout.scale, 2),
+              height: Math.max(r.h * layout.scale, 2),
+              boxShadow: "0 0 0 1px rgba(255,255,255,0.75)",
+            }}
+            title={`~${r.confidence}% confidence`}
+          />
+        ))}
+    </div>
+  );
+}
+
 interface AnalyzeResponse {
   filename: string;
   doc_type_key: string;
@@ -78,6 +153,7 @@ interface AnalyzeResponse {
   preview_image_media_type?: string;
   file_dna?: FileDnaRow[];
   ela_image_base64?: string;
+  suspicious_regions?: SuspiciousRegion[];
   detector_summary?: Record<string, DetectorSummaryItem>;
   ai_confidence?: number;
   ai_indicators?: string[];
@@ -959,10 +1035,9 @@ export default function Home() {
                           style={{ borderColor: COLORS.border, boxShadow: "0 12px 30px rgba(0,0,0,0.12)" }}
                         >
                           {result?.ela_image_base64 ? (
-                            <img
-                              src={`data:image/png;base64,${result.ela_image_base64}`}
-                              alt="ELA heatmap"
-                              className="h-full w-full object-contain"
+                            <ElaHeatmapWithBoxes
+                              base64={result.ela_image_base64}
+                              regions={result.suspicious_regions}
                             />
                           ) : (
                             <div
@@ -995,17 +1070,17 @@ export default function Home() {
                         </div>
 
                         {/* Suspicious regions summary */}
-                        {(result as any)?.suspicious_regions?.length > 0 && (
+                        {result?.suspicious_regions && result.suspicious_regions.length > 0 && (
                           <div
                             className="mt-2 w-full rounded-lg border px-3 py-2"
                             style={{ borderColor: "#fecaca", backgroundColor: "#fef2f2" }}
                           >
                             <p className="text-[11px] font-semibold" style={{ color: "#b91c1c" }}>
-                              {(result as any).suspicious_regions.length} suspicious region
-                              {(result as any).suspicious_regions.length > 1 ? "s" : ""} detected
+                              {result.suspicious_regions.length} suspicious region
+                              {result.suspicious_regions.length > 1 ? "s" : ""} detected (red boxes on heatmap)
                             </p>
                             <ul className="mt-1 space-y-0.5">
-                              {(result as any).suspicious_regions.slice(0, 3).map((r: any, i: number) => (
+                              {result.suspicious_regions.slice(0, 3).map((r, i) => (
                                 <li key={i} className="text-[11px]" style={{ color: "#991b1b" }}>
                                   Region {i + 1}: {r.w}×{r.h}px at ({r.x}, {r.y}) — {r.confidence}% confidence
                                 </li>

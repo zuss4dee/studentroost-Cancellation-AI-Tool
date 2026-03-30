@@ -169,6 +169,91 @@ def _fuse_maps(maps_with_weights: List[Tuple[np.ndarray, float]]) -> np.ndarray:
     return np.clip(fused / total_weight, 0, 255).astype(np.float32)
 
 
+def _structural_edge_strength(gray_f32: np.ndarray) -> np.ndarray:
+    """
+    Normalised gradient magnitude (0–1), widened slightly so full strokes are covered.
+    High on sharp text, hologram rims, and micro-print — typical ELA false positives.
+    """
+    g = np.asarray(gray_f32, dtype=np.float64)
+    gx = cv2.Sobel(g, cv2.CV_64F, 1, 0, ksize=3)
+    gy = cv2.Sobel(g, cv2.CV_64F, 0, 1, ksize=3)
+    mag = np.sqrt(gx * gx + gy * gy).astype(np.float32)
+    p = float(np.percentile(mag, 99.5) + 1e-6)
+    mag_n = np.clip(mag / p, 0.0, 1.0)
+    mag_u8 = (mag_n * 255.0).astype(np.uint8)
+    dil = cv2.dilate(mag_u8, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+    blur = cv2.GaussianBlur(dil, (7, 7), 0)
+    return (blur.astype(np.float32) / 255.0).clip(0.0, 1.0)
+
+
+def _local_zscore(fused: np.ndarray, window: int = 21) -> np.ndarray:
+    """Per-pixel z-score vs local window; high where fused is hotter than neighbours."""
+    mu = uniform_filter(fused, size=window, mode="nearest")
+    mu2 = uniform_filter(fused * fused, size=window, mode="nearest")
+    var = np.clip(mu2 - mu * mu, 0, None)
+    std = np.sqrt(var.astype(np.float64) + 1e-6).astype(np.float32)
+    return (fused - mu) / std
+
+
+def _percentile_norm01_to_255(x: np.ndarray) -> np.ndarray:
+    lo = float(np.percentile(x, 2))
+    hi = float(np.percentile(x, 98))
+    if hi <= lo:
+        return np.zeros_like(x, dtype=np.float32)
+    return np.clip((x - lo) / (hi - lo) * 255.0, 0, 255).astype(np.float32)
+
+
+def _reduce_structural_false_positives(fused: np.ndarray, image: Image.Image) -> np.ndarray:
+    """
+    Dampen heatmap response on strong document structure (text edges, fine print).
+
+    ELA/DCT are naturally high on high-frequency content even when unedited; this
+    step cannot remove all false positives but makes smudges/splices stand out as
+    local outliers rather than global "everything is red".
+    """
+    gray = np.array(image.convert("L"), dtype=np.float32)
+    h, w = fused.shape[:2]
+    if gray.shape[0] != h or gray.shape[1] != w:
+        gray = cv2.resize(gray, (w, h), interpolation=cv2.INTER_LINEAR)
+
+    edge = _structural_edge_strength(gray)
+    # Stronger edges → stronger down-weight; keep at least ~32% so real signal can survive
+    attenuation = 1.0 - 0.48 * np.power(edge, 1.15)
+    attenuation = np.clip(attenuation, 0.32, 1.0)
+    fused_att = fused * attenuation
+
+    z = _local_zscore(fused, window=21)
+    z_map = _percentile_norm01_to_255(z)
+
+    # Blend: structural damping + local outlier emphasis (smudges pop vs flat surround)
+    combined = 0.56 * fused_att + 0.44 * z_map
+    return np.clip(combined, 0, 255).astype(np.float32)
+
+
+def _fused_map_for_ela_display(image: Image.Image) -> np.ndarray:
+    """
+    Single fused map used for the ELA-tab heatmap (before colormap).
+    Bounding boxes must be derived from this same tensor so overlays align.
+    """
+    ela = _ela_map(image)
+    noise = _noise_map(image)
+    dct = _dct_map(image)
+    ela_has_signal = ela.max() > 10
+    if ela_has_signal:
+        maps = [
+            (ela, 0.30),
+            (noise, 0.35),
+            (dct, 0.35),
+        ]
+    else:
+        maps = [
+            (noise, 0.45),
+            (dct, 0.55),
+        ]
+    fused = _fuse_maps(maps)
+    return _reduce_structural_false_positives(fused, image)
+
+
 def _apply_colormap_overlay(heatmap_f32: np.ndarray, original: Image.Image) -> Image.Image:
     """
     Percentile stretch → CLAHE → COLORMAP_TURBO overlay.
@@ -243,25 +328,7 @@ class PixelDetector:
         Returns the fused 4-layer forensic heatmap as a PIL Image.
         Replaces single-quality ELA with full fusion engine output.
         """
-        ela    = _ela_map(image)
-        noise  = _noise_map(image)
-        dct    = _dct_map(image)
-
-        # If ELA map is zero (PNG-origin image), shift full weight to noise + DCT
-        ela_has_signal = ela.max() > 10
-        if ela_has_signal:
-            maps = [
-                (ela,   0.30),
-                (noise, 0.35),
-                (dct,   0.35),
-            ]
-        else:
-            maps = [
-                (noise, 0.45),
-                (dct,   0.55),
-            ]
-
-        fused = _fuse_maps(maps)
+        fused = _fused_map_for_ela_display(image)
         return _apply_colormap_overlay(fused, image)
 
     def analyze_noise(self, image: Image.Image) -> dict:
@@ -306,7 +373,11 @@ class PixelDetector:
                 (dct_map_arr,   0.45),
             ])
 
-        boxes = _extract_bounding_boxes(fused, threshold=160)
+        fused = _reduce_structural_false_positives(fused, image)
+
+        # Boxes must match the ELA-tab heatmap (same fusion weights + post-process)
+        fused_for_ela_boxes = _fused_map_for_ela_display(image)
+        boxes = _extract_bounding_boxes(fused_for_ela_boxes, threshold=160)
 
         if boxes:
             flags.append(
