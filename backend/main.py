@@ -365,6 +365,24 @@ async def analyze_document(file: UploadFile = File(...), doc_type_key: str = For
             out["preview_image_media_type"] = preview_image_media_type
         if ela_image_base64 is not None:
             out["ela_image_base64"] = ela_image_base64
+
+        # Noise heatmap
+        noise_heatmap_base64 = None
+        noise_heatmap_img = (analysis.get("noise") or {}).get("noise_heatmap")
+        if noise_heatmap_img is not None:
+            buf_noise = BytesIO()
+            if noise_heatmap_img.mode != "RGB":
+                noise_heatmap_img = noise_heatmap_img.convert("RGB")
+            noise_heatmap_img.save(buf_noise, format="PNG")
+            noise_heatmap_base64 = base64.b64encode(buf_noise.getvalue()).decode("utf-8")
+        if noise_heatmap_base64 is not None:
+            out["noise_heatmap_base64"] = noise_heatmap_base64
+
+        # Bounding boxes of suspicious regions
+        suspicious_regions = (analysis.get("noise") or {}).get("suspicious_regions", [])
+        if suspicious_regions:
+            out["suspicious_regions"] = suspicious_regions
+
         if ai_confidence is not None:
             out["ai_confidence"] = ai_confidence
         if ai_indicators:
