@@ -5,11 +5,13 @@ import {
   ChevronDown,
   ChevronRight,
   CloudUpload,
+  Copy,
   Dna,
   FileStack,
   FileText,
   FolderOpen,
   Info,
+  MessageCircle,
   Play,
   PlusSquare,
   Search,
@@ -17,6 +19,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import { explainResult } from "../lib/explainResult";
 import type { PdfExtractionResult } from "../lib/pdfContentTypes";
 import { runUniversalContentChecks } from "../lib/universalChecks";
 
@@ -271,6 +274,7 @@ export default function Home() {
     setExtractedTextModalOpen(false);
     setPdfExtractResult(null);
     setExtractedContentOpen(true);
+    setForensicExplanation(null);
   }, []);
   const handleUpload = useCallback(
     async (file: File) => {
@@ -282,6 +286,7 @@ export default function Home() {
       setIsUploading(true);
       setResult(null);
       setPdfExtractResult(null);
+      setForensicExplanation(null);
       setActiveView("result");
       const formAnalyze = new FormData();
       formAnalyze.append("file", file);
@@ -381,6 +386,7 @@ export default function Home() {
   const [extractedTextModalOpen, setExtractedTextModalOpen] = useState(false);
   const [pdfExtractResult, setPdfExtractResult] = useState<PdfExtractionResult | null>(null);
   const [extractedContentOpen, setExtractedContentOpen] = useState(true);
+  const [forensicExplanation, setForensicExplanation] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [userProfile, setUserProfile] = useState({ displayName: "Sarah Jenkins", role: "Senior Ops Analyst" });
   const [scoreInfoPopover, setScoreInfoPopover] = useState<"forgery" | "trust" | null>(null);
@@ -476,6 +482,11 @@ export default function Home() {
     primaryVerdictTitle = "Accept";
     secondaryVerdictSubtitle = "No critical policy violations detected";
   }
+
+  const detectedLanguageLabel =
+    pdfExtractResult?.detectedLanguage ??
+    universalContent?.summary?.primaryLanguage ??
+    "Not detected";
 
   return (
     <div
@@ -1582,6 +1593,78 @@ export default function Home() {
                       </button>
                     </div>
                     <div className="flex-1 overflow-y-auto p-4 space-y-5">
+                      {result && (
+                        <section className="rounded-lg border p-3" style={{ borderColor: COLORS.border }}>
+                          <div
+                            className="text-[11px] font-semibold uppercase tracking-wide mb-1"
+                            style={{ color: COLORS.textSecondary }}
+                          >
+                            Verdict
+                          </div>
+                          <p className="text-[13px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                            {primaryVerdictTitle}
+                          </p>
+                          <p className="mt-0.5 text-[11px]" style={{ color: COLORS.textSecondary }}>
+                            {secondaryVerdictSubtitle}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const text = explainResult({
+                                verdict: result.policy_result.verdict,
+                                forgeryScore: result.forgery_score,
+                                trustScore: result.trust_score,
+                                redFlags: mergedRedFlags,
+                                documentClassKey: docTypeKey,
+                                documentClassLabel: docTypeLabel,
+                                detectedLanguage: detectedLanguageLabel,
+                              });
+                              setForensicExplanation(text);
+                            }}
+                            className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg border px-3 py-2 text-[12px] font-medium transition hover:bg-slate-50"
+                            style={{ borderColor: COLORS.border, color: COLORS.purple }}
+                          >
+                            <MessageCircle className="h-4 w-4 shrink-0" aria-hidden />
+                            Explain This Result
+                          </button>
+                          {forensicExplanation && (
+                            <div
+                              className="mt-3 rounded-lg border px-3 py-2.5"
+                              style={{
+                                borderColor: COLORS.border,
+                                backgroundColor: "#f4f4f5",
+                              }}
+                            >
+                              <p className="text-[10px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
+                                Explanation
+                              </p>
+                              <div
+                                className="max-h-64 overflow-y-auto text-[11px] leading-relaxed whitespace-pre-wrap"
+                                style={{ color: COLORS.textPrimary }}
+                              >
+                                {forensicExplanation}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    await navigator.clipboard.writeText(forensicExplanation);
+                                    addToast("Explanation copied to clipboard", "success");
+                                  } catch {
+                                    addToast("Could not copy to clipboard", "error");
+                                  }
+                                }}
+                                className="mt-2 inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium hover:bg-white/80"
+                                style={{ borderColor: COLORS.borderDark, color: COLORS.textPrimary }}
+                              >
+                                <Copy className="h-3.5 w-3.5" aria-hidden />
+                                Copy
+                              </button>
+                            </div>
+                          )}
+                        </section>
+                      )}
+
                       {forensicCriticalFlags.length > 0 && (
                         <section>
                           <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
