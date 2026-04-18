@@ -360,6 +360,49 @@ class PixelDetector:
         ela_map_arr   = _ela_map(image)
         dct_map_arr   = _dct_map(image)
 
+        # Calibration metrics for ConfidenceScorer (same image as live pipeline)
+        ela_q60_mean: Optional[float] = None
+        try:
+            if image.mode != "RGB":
+                _rgb = image.convert("RGB")
+            else:
+                _rgb = image
+            original_np = np.array(_rgb, dtype=np.float32)
+            buf_test = BytesIO()
+            _rgb.save(buf_test, format="JPEG", quality=95)
+            buf_test.seek(0)
+            test_np = np.array(Image.open(buf_test).convert("RGB"), dtype=np.float32)
+            if np.abs(original_np - test_np).mean() >= 0.3:
+                buf60 = BytesIO()
+                _rgb.save(buf60, format="JPEG", quality=60)
+                buf60.seek(0)
+                resaved60 = np.array(Image.open(buf60).convert("RGB"), dtype=np.float32)
+                diff60 = np.abs(original_np - resaved60).mean(axis=2)
+                ela_q60_mean = float(diff60.mean())
+        except Exception:
+            ela_q60_mean = None
+
+        dct_blocks_z_gt_1_5: Optional[int] = None
+        try:
+            img_l = np.array(image.convert("L"), dtype=np.float32)
+            h0, w0 = img_l.shape
+            block_size = 8
+            energies: List[float] = []
+            for y in range(0, h0 - block_size, block_size):
+                for x in range(0, w0 - block_size, block_size):
+                    block = img_l[y : y + block_size, x : x + block_size]
+                    dct_block = cv2.dct(block)
+                    energies.append(float(np.sum(np.abs(dct_block[4:, 4:]))))
+            if energies:
+                mean_e = float(np.mean(energies))
+                std_e = float(np.std(energies))
+                if std_e >= 1e-8:
+                    dct_blocks_z_gt_1_5 = sum(1 for e in energies if (e - mean_e) / std_e > 1.5)
+                else:
+                    dct_blocks_z_gt_1_5 = 0
+        except Exception:
+            dct_blocks_z_gt_1_5 = None
+
         ela_has_signal = ela_map_arr.max() > 10
         if ela_has_signal:
             fused = _fuse_maps([
@@ -405,6 +448,8 @@ class PixelDetector:
 
         return {
             'variance': variance,
+            'ela_q60_mean': ela_q60_mean,
+            'dct_blocks_z_gt_1_5': dct_blocks_z_gt_1_5,
             'flags': flags,
             'findings': ' '.join(findings),
             'noise_heatmap': noise_heatmap,

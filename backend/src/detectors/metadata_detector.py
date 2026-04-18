@@ -11,8 +11,10 @@ from io import BytesIO
 from datetime import datetime
 
 # Software signatures to search for in raw file binary (aggressive clean-render detection)
+# Do not include generic vendors (Adobe/Acrobat/Quartz) — legitimate government PDFs embed those strings.
 BINARY_SOFTWARE_SIGNATURES = [
-    'Photopea', 'Canva', 'Adobe', 'Photoshop', 'GIMP', 'Figma'
+    'Photopea', 'smallpdf', 'ilovepdf', 'pdf24', 'sejda',
+    'Photoshop', 'GIMP', 'Canva', 'Figma',
 ]
 
 # Common mobile/screenshot resolutions (width, height) - portrait or landscape
@@ -33,10 +35,10 @@ SCREENSHOT_ASPECT_RATIOS = [
 class MetadataDetector:
     """Detects fraud indicators through metadata analysis."""
     
-    # Suspicious editing software
+    # Suspicious editing / consumer PDF tooling (not normal government producers)
     SUSPICIOUS_SOFTWARE = [
-        'photoshop', 'gimp', 'canva', 'sejda', 'ilovepdf',
-        'adobe photoshop', 'gimp', 'paint.net', 'photopea'
+        'photoshop', 'gimp', 'canva', 'sejda', 'ilovepdf', 'smallpdf', 'pdf24',
+        'paint.net', 'photopea', 'online2pdf', 'pdfcandy',
     ]
     
     # High trust banking/document software
@@ -57,10 +59,12 @@ class MetadataDetector:
         'university', 'college', '.ac.uk', 'department', 'faculty',
         'admissions', 'registry', 'student services',
         # Home Office
-        'home office', 'ukvi', 'uk visa', 'immigration', 'visa',
+        'home office', 'homeoffice', 'ukvi', 'uk visa', 'immigration', 'visa',
         'entry clearance', 'confirmation of acceptance',
+        # Government / health (content or URLs)
+        'gov.uk', 'nhs.uk', 'nhs',
         # Email domains
-        '@ac.uk', '@gov.uk',
+        '@ac.uk', '@gov.uk', '@nhs.uk', '@nhs.net',
         # Document types
         'cas', 'confirmation of acceptance for studies'
     ]
@@ -315,7 +319,11 @@ class MetadataDetector:
                 if indicators:
                     institutional_indicators = indicators
                     raw_data['institutional_indicators'] = indicators
-                    flags.append('Institutional Indicators Found in Document Content')
+                    trust_score = min(100, trust_score + 15)
+                    risk_score = max(0, risk_score - 15)
+                    raw_data['institutional_trust_note'] = (
+                        'Institutional indicators found in document content — treated as a trust signal.'
+                    )
         except Exception as e:
             # Text extraction failed, continue without it
             raw_data['text_extraction_error'] = str(e)
@@ -332,21 +340,33 @@ class MetadataDetector:
             # Check if Producer is a generic system tool
             producer_lower = (raw_data['producer'] or '').lower()
             is_generic_producer = any(term in producer_lower for term in [
-                'quartz', 'pdfcontext', 'print', 'system', 'default',
+                'print', 'system', 'default',
                 'microsoft print to pdf', 'save as pdf'
             ])
             
             # Adjust risk score based on institutional indicators
             if institutional_indicators:
-                # Institutional content found - likely legitimate but re-saved
-                risk_score += 15  # Reduced from 25
+                # Institutional content found — missing author/creator alone is not a strong fraud signal
+                risk_score += 5
                 has_missing_metadata_with_indicators = True
                 if is_generic_producer:
-                    flags.append('Missing Metadata - Document Likely Re-Saved/Printed (Institutional Content Detected)')
-                    raw_data['assessment'] = 'Likely legitimate document that was re-saved/printed. Institutional indicators present but metadata lost during re-processing.'
+                    flags.append(
+                        'Limited metadata (author/creator) — common when official PDFs are re-saved or printed; '
+                        'institutional content detected in document text.'
+                    )
+                    raw_data['assessment'] = (
+                        'Likely legitimate official document: institutional indicators present; '
+                        'some metadata fields may be absent due to re-saving or data-handling policy.'
+                    )
                 else:
-                    flags.append('Missing Metadata - Requires Verification (Institutional Content Detected)')
-                    raw_data['assessment'] = 'Institutional content detected but metadata incomplete. Verify authenticity with issuing institution.'
+                    flags.append(
+                        'Limited metadata (author/creator) — institutional content detected; '
+                        'verify with issuing authority if unsure.'
+                    )
+                    raw_data['assessment'] = (
+                        'Institutional content detected; author/creator metadata incomplete — '
+                        'not automatically suspicious for government or university correspondence.'
+                    )
             else:
                 # No institutional indicators - higher suspicion
                 risk_score += 25  # Full penalty
@@ -377,7 +397,7 @@ class MetadataDetector:
         if raw_data['producer']:
             producer_lower = raw_data['producer'].lower()
             is_generic_producer = any(term in producer_lower for term in [
-                'quartz', 'pdfcontext', 'print', 'system', 'default',
+                'print', 'system', 'default',
                 'microsoft print to pdf', 'save as pdf'
             ])
             

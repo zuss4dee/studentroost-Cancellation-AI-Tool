@@ -7,6 +7,32 @@ Combines all fraud detection indicators to calculate high-confidence scores.
 
 class ConfidenceScorer:
     """Calculates confidence scores based on multiple fraud indicators."""
+
+    # --- Pixel / fusion calibration (real-world benchmarks) ---
+    # Noise variance: Laplacian variance on greyscale render (same as PixelDetector)
+    NOISE_VARIANCE_GREEN_MAX = 800
+    NOISE_VARIANCE_AMBER_MAX = 2000
+    # > NOISE_VARIANCE_AMBER_MAX => RED
+
+    # ELA: JPEG Q60 mean absolute diff per pixel (RGB mean), 0–255 scale
+    ELA_Q60_GREEN_MAX = 5.0
+    ELA_Q60_AMBER_MAX = 12.0
+    # > ELA_Q60_AMBER_MAX => RED
+
+    # DCT: count of 8×8 blocks whose HF energy z-score > 1.5 vs block population
+    DCT_BLOCKS_GREEN_MAX = 5000
+    DCT_BLOCKS_AMBER_MAX = 8000
+    # > DCT_BLOCKS_AMBER_MAX => RED
+
+    PRODUCER_PIXEL_WHITELIST = (
+        "gov.uk",
+        "nhs",
+        "adobe acrobat",
+        "microsoft",
+        "quartz pdfcontext",
+        "itext",
+        "fpdf",
+    )
     
     # Strong fraud indicators (high confidence triggers)
     STRONG_INDICATORS = [
@@ -56,7 +82,95 @@ class ConfidenceScorer:
             'post_signing_modifications': 50
         }
     }
-    
+
+    @staticmethod
+    def _producer_whitelist_applies(metadata_result: dict) -> bool:
+        raw = (metadata_result or {}).get("raw_data") or {}
+        pdf_meta = raw.get("pdf_metadata") or {}
+        producer = (
+            str(raw.get("producer") or pdf_meta.get("producer") or "")
+        ).lower()
+        if not producer.strip():
+            return False
+        return any(token in producer for token in ConfidenceScorer.PRODUCER_PIXEL_WHITELIST)
+
+    @staticmethod
+    def _institutional_indicators_present(metadata_result: dict) -> bool:
+        raw = (metadata_result or {}).get("raw_data") or {}
+        ind = raw.get("institutional_indicators")
+        if isinstance(ind, list):
+            return len(ind) > 0
+        if isinstance(ind, str) and ind.strip():
+            return True
+        return False
+
+    def _mitigate_missing_metadata_for_institutional_docs(self, metadata_result: dict) -> None:
+        """
+        Missing author/creator (or stripped metadata) is common on genuine government PDFs
+        when institutional identity is visible in the document body.
+        """
+        if not metadata_result or not self._institutional_indicators_present(metadata_result):
+            return
+
+        raw = metadata_result.get("raw_data") or {}
+        incomplete = bool(raw.get("metadata_incomplete"))
+
+        flags = list(metadata_result.get("flags") or [])
+        if not flags:
+            return
+
+        removable_substrings = (
+            "missing author",
+            "missing metadata",
+            "metadata intentionally stripped",
+            "metadata incomplete",
+            "requires verification (institutional content detected)",
+            "high suspicion (institutional content detected)",
+            "high suspicion (no institutional indicators)",
+        )
+
+        new_flags: list[str] = []
+        removed_any = False
+        risk_adjust = 0
+        for f in flags:
+            fl = f.lower()
+            should_remove = any(s in fl for s in removable_substrings) and (
+                incomplete or "metadata intentionally stripped" in fl
+            )
+            if should_remove:
+                removed_any = True
+                if "metadata intentionally stripped" in fl:
+                    risk_adjust += 15
+                elif "missing author" in fl or "missing metadata" in fl:
+                    risk_adjust += 20
+                continue
+            new_flags.append(f)
+
+        if not removed_any:
+            return
+
+        note = (
+            "Metadata absent or limited — consistent with official government document "
+            "data protection or publishing practice; institutional indicators present in content."
+        )
+        if note not in new_flags:
+            new_flags.append(note)
+
+        metadata_result["flags"] = new_flags
+
+        rs = int(metadata_result.get("risk_score", 0) or 0)
+        ts = int(metadata_result.get("trust_score", 0) or 0)
+        metadata_result["risk_score"] = max(0, min(100, rs - risk_adjust))
+        metadata_result["trust_score"] = max(0, min(100, ts + 10))
+
+    def _pixel_band_score(self, value: float, green_max: float, amber_max: float) -> int:
+        """0 = GREEN band, 1 = AMBER, 2 = RED."""
+        if value <= green_max:
+            return 0
+        if value <= amber_max:
+            return 1
+        return 2
+
     def calculate_confidence(self, all_results):
         """
         Calculate overall confidence score from all detector results.
@@ -90,6 +204,7 @@ class ConfidenceScorer:
         # Metadata indicators
         if 'metadata' in all_results:
             metadata_result = all_results['metadata']
+            self._mitigate_missing_metadata_for_institutional_docs(metadata_result)
             all_flags.extend(metadata_result.get('flags', []))
             category_scores['metadata'] = metadata_result.get('risk_score', 0)
             if metadata_result.get('flags'):
@@ -126,8 +241,57 @@ class ConfidenceScorer:
             category_scores['layout'] = layout_result.get('risk_score', 0)
             if layout_result.get('flags'):
                 indicator_count += len(layout_result['flags'])
-        
-        # Pixel indicators
+
+        # Pixel / fusion calibration (noise variance, ELA Q60, DCT block outliers)
+        noise_result = all_results.get("noise") or {}
+        metadata_for_pixel = all_results.get("metadata") or {}
+        whitelist_factor = (
+            0.5 if self._producer_whitelist_applies(metadata_for_pixel) else 1.0
+        )
+
+        noise_var = noise_result.get("variance")
+        ela_q60_mean = noise_result.get("ela_q60_mean")
+        dct_blocks_high = noise_result.get("dct_blocks_z_gt_1_5")
+
+        pixel_subscores = []
+        if isinstance(noise_var, (int, float)):
+            adj_var = float(noise_var) * whitelist_factor
+            pixel_subscores.append(
+                self._pixel_band_score(
+                    adj_var,
+                    self.NOISE_VARIANCE_GREEN_MAX,
+                    self.NOISE_VARIANCE_AMBER_MAX,
+                )
+            )
+        if isinstance(ela_q60_mean, (int, float)) and float(ela_q60_mean) > 0:
+            adj_ela = float(ela_q60_mean) * whitelist_factor
+            pixel_subscores.append(
+                self._pixel_band_score(
+                    adj_ela,
+                    self.ELA_Q60_GREEN_MAX,
+                    self.ELA_Q60_AMBER_MAX,
+                )
+            )
+        if isinstance(dct_blocks_high, int):
+            adj_dct = float(dct_blocks_high) * whitelist_factor
+            pixel_subscores.append(
+                self._pixel_band_score(
+                    adj_dct,
+                    self.DCT_BLOCKS_GREEN_MAX,
+                    self.DCT_BLOCKS_AMBER_MAX,
+                )
+            )
+
+        if pixel_subscores:
+            worst = max(pixel_subscores)
+            if worst == 0:
+                category_scores["pixel"] = 10
+            elif worst == 1:
+                category_scores["pixel"] = 40
+            else:
+                category_scores["pixel"] = 75
+
+        # Pixel indicators (flags from noise pipeline)
         if 'noise' in all_results:
             pixel_result = all_results.get('noise', {})
             all_flags.extend(pixel_result.get('flags', []))
