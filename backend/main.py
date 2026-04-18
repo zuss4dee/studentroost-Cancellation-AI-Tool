@@ -23,6 +23,7 @@ from .src.detectors.signature_detector import SignatureDetector
 from .src.detectors.embedded_object_detector import EmbeddedObjectDetector
 from .src.detectors.confidence_scorer import ConfidenceScorer
 from .src.detectors.ai_content_detector import AIContentDetector
+from .src.detectors.universal_content_checks import run_universal_content_checks
 from .src.policy_engine import PolicyEngine
 
 
@@ -114,10 +115,11 @@ def run_full_analysis(filename: str, file_bytes: bytes) -> Dict[str, Any]:
     )
 
     ai_result = None
+    uc_body_text = ""
     if file_type == "pdf" and pdf_doc:
         try:
-            extracted_text = metadata_result.get("raw_data", {}).get("extracted_text_full", "")
-            if not extracted_text:
+            uc_body_text = metadata_result.get("raw_data", {}).get("extracted_text_full", "") or ""
+            if not uc_body_text.strip():
                 text_parts: List[str] = []
                 for page_num in range(min(len(pdf_doc), 3)):
                     try:
@@ -127,10 +129,10 @@ def run_full_analysis(filename: str, file_bytes: bytes) -> Dict[str, Any]:
                             text_parts.append(page_text)
                     except Exception:
                         continue
-                extracted_text = "\n\n".join(text_parts)
+                uc_body_text = "\n\n".join(text_parts)
 
-            if extracted_text and len(extracted_text.strip()) > 50:
-                ai_result = ai_content_detector.analyze(extracted_text)
+            if uc_body_text and len(uc_body_text.strip()) > 50:
+                ai_result = ai_content_detector.analyze(uc_body_text)
         except Exception:
             ai_result = None
 
@@ -190,6 +192,22 @@ def run_full_analysis(filename: str, file_bytes: bytes) -> Dict[str, Any]:
     else:
         confidence_result = None
 
+    universal_content_bundle: Optional[Dict[str, Any]] = None
+    if file_type == "pdf":
+        try:
+            creation_raw = str(_pdf_meta.get("creationDate") or "")
+            universal_content_bundle = run_universal_content_checks(
+                uc_body_text or "", _creator_hint, _producer_hint, creation_raw
+            )
+            high_n = int(universal_content_bundle.get("high_severity_count", 0) or 0)
+            if high_n > 0:
+                rs = int(metadata_result.get("risk_score", 0) or 0)
+                ts = int(metadata_result.get("trust_score", 0) or 0)
+                metadata_result["risk_score"] = min(100, rs + 15 * high_n)
+                metadata_result["trust_score"] = max(0, ts - 10 * high_n)
+        except Exception:
+            universal_content_bundle = None
+
     ela_risk_low = not noise_result.get("flags") or len(
         [
             f
@@ -217,6 +235,7 @@ def run_full_analysis(filename: str, file_bytes: bytes) -> Dict[str, Any]:
         "ai_content": ai_result,
         "correlation_flag": correlation_flag,
         "all_results": all_results if file_type == "pdf" else {},
+        "universal_content": universal_content_bundle,
     }
 
     if pdf_doc:
@@ -240,6 +259,12 @@ def collect_red_flags(analysis: Dict[str, Any]) -> List[str]:
         flags.append(f"AI-generated content detected (confidence {confidence:.1f}%).")
         for indicator in ai_content.get("indicators", []):
             flags.append(indicator)
+
+    uc = analysis.get("universal_content")
+    if isinstance(uc, dict):
+        for f in uc.get("flags") or []:
+            if isinstance(f, dict) and f.get("detail"):
+                flags.append(str(f["detail"]))
 
     if analysis.get("correlation_flag"):
         flags.append(analysis["correlation_flag"])

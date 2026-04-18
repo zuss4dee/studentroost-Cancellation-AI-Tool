@@ -44,6 +44,10 @@ class PolicyEngine:
                 'critical_flags_hit': list
             }
         """
+        uc_block = self._check_universal_content_cluster(analysis)
+        if uc_block:
+            return uc_block
+
         # 1. Get Policy for this Document Type
         policies = self.config.get('document_types', {})
         policy = policies.get(doc_type_key, {})
@@ -157,6 +161,33 @@ class PolicyEngine:
                 'action': "Accept as evidence.",
                 'critical_flags_hit': []
             }
+
+    @staticmethod
+    def _check_universal_content_cluster(analysis):
+        """
+        Three or more high-severity universal content-analysis flags → RED (do not accept),
+        regardless of pixel/ELA scores.
+        """
+        uc = analysis.get('universal_content') or {}
+        try:
+            uc_high = int(uc.get('high_severity_count', 0) or 0)
+        except (TypeError, ValueError):
+            uc_high = 0
+        if uc_high < 3:
+            return None
+        hits = [
+            f.get('detail', '')
+            for f in (uc.get('flags') or [])
+            if isinstance(f, dict) and f.get('severity') == 'high' and f.get('detail')
+        ]
+        return {
+            'verdict': 'RED',
+            'reason': 'Do not accept: three or more high-severity content-analysis flags.',
+            'action': (
+                'Reject immediately. Universal content checks indicate inconsistent or high-risk document content.'
+            ),
+            'critical_flags_hit': hits[:12],
+        }
 
     def _check_auto_reject(self, analysis, rule):
         """

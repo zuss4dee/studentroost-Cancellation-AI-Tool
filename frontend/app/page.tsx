@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  ChevronDown,
   ChevronRight,
   CloudUpload,
   Dna,
@@ -14,8 +15,10 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
+import type { PdfExtractionResult } from "../lib/pdfContentTypes";
+import { runUniversalContentChecks } from "../lib/universalChecks";
 
 const MAX_FILE_SIZE_MB = 200;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
@@ -266,6 +269,8 @@ export default function Home() {
     setPolicyDetailsOpen(false);
     setRedFlagsModalOpen(false);
     setExtractedTextModalOpen(false);
+    setPdfExtractResult(null);
+    setExtractedContentOpen(true);
   }, []);
   const handleUpload = useCallback(
     async (file: File) => {
@@ -276,26 +281,59 @@ export default function Home() {
       }
       setIsUploading(true);
       setResult(null);
+      setPdfExtractResult(null);
       setActiveView("result");
-      const form = new FormData();
-      form.append("file", file);
-      form.append("doc_type_key", docTypeKey);
+      const formAnalyze = new FormData();
+      formAnalyze.append("file", file);
+      formAnalyze.append("doc_type_key", docTypeKey);
+
+      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+      const extractForm = new FormData();
+      extractForm.append("file", file);
+
       try {
-        const res = await fetch("https://studentroost-cancellation-ai-tool.onrender.com/api/analyze", {
+        const analyzePromise = fetch("https://studentroost-cancellation-ai-tool.onrender.com/api/analyze", {
           method: "POST",
-          body: form,
+          body: formAnalyze,
+        }).then(async (res) => {
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error((err as { detail?: string }).detail ?? `Request failed: ${res.status}`);
+          }
+          return res.json() as Promise<AnalyzeResponse>;
         });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.detail ?? `Request failed: ${res.status}`);
+
+        const extractPromise: Promise<PdfExtractionResult | null> = isPdf
+          ? fetch("/api/extract-pdf", { method: "POST", body: extractForm }).then(async (res) => {
+              if (!res.ok) return null;
+              return res.json() as Promise<PdfExtractionResult>;
+            })
+          : Promise.resolve(null);
+
+        const [analyzeOutcome, extractOutcome] = await Promise.allSettled([analyzePromise, extractPromise]);
+
+        if (analyzeOutcome.status === "fulfilled") {
+          setResult(analyzeOutcome.value);
+          setActiveView("result");
+        } else {
+          const message =
+            analyzeOutcome.reason instanceof Error
+              ? analyzeOutcome.reason.message
+              : "Upload failed";
+          setUploadError(message);
+          addToast(message, "error");
         }
-        const data: AnalyzeResponse = await res.json();
-        setResult(data);
-        setActiveView("result");
+
+        if (extractOutcome.status === "fulfilled") {
+          setPdfExtractResult(extractOutcome.value);
+        } else {
+          setPdfExtractResult(null);
+        }
       } catch (e) {
         const message = e instanceof Error ? e.message : "Upload failed";
         setUploadError(message);
         addToast(message, "error");
+        setPdfExtractResult(null);
       } finally {
         setIsUploading(false);
       }
@@ -341,6 +379,8 @@ export default function Home() {
   const [policyDetailsOpen, setPolicyDetailsOpen] = useState(false);
   const [redFlagsModalOpen, setRedFlagsModalOpen] = useState(false);
   const [extractedTextModalOpen, setExtractedTextModalOpen] = useState(false);
+  const [pdfExtractResult, setPdfExtractResult] = useState<PdfExtractionResult | null>(null);
+  const [extractedContentOpen, setExtractedContentOpen] = useState(true);
   const [profileOpen, setProfileOpen] = useState(false);
   const [userProfile, setUserProfile] = useState({ displayName: "Sarah Jenkins", role: "Senior Ops Analyst" });
   const [scoreInfoPopover, setScoreInfoPopover] = useState<"forgery" | "trust" | null>(null);
@@ -357,6 +397,51 @@ export default function Home() {
   const showResults = activeView === "result" && !!result;
   const showSkeleton = isUploading && !result;
   const verdict = result?.policy_result.verdict ?? null;
+
+  const universalContent = useMemo(() => {
+    if (!result) return null;
+    return runUniversalContentChecks({
+      extractedText: result.extracted_text ?? "",
+      fileDnaRows: result.file_dna ?? [],
+    });
+  }, [result]);
+
+  const mergedRedFlags = useMemo(() => {
+    if (!result) return [];
+    const fromApi = result.red_flags ?? [];
+    const fromContent = universalContent?.flags.map((f) => f.detail) ?? [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const s of [...fromApi, ...fromContent]) {
+      const t = s.trim();
+      if (!t || seen.has(t)) continue;
+      seen.add(t);
+      out.push(s);
+    }
+    return out;
+  }, [result, universalContent]);
+
+  /** Policy critical hits + universal content flags for the forensic drawer */
+  const forensicCriticalFlags = useMemo(() => {
+    const items: Array<{
+      type: string;
+      severity: "high" | "medium";
+      label: string;
+      detail: string;
+    }> = [];
+    for (const hit of result?.policy_result?.critical_flags_hit ?? []) {
+      items.push({
+        type: "policy",
+        severity: "high",
+        label: "Policy engine",
+        detail: hit,
+      });
+    }
+    for (const f of universalContent?.flags ?? []) {
+      items.push(f);
+    }
+    return items;
+  }, [result, universalContent]);
 
   const docTypeLabel =
     DOC_CLASS_OPTIONS.find((opt) => opt.value === docTypeKey)?.label ?? "Unknown Type";
@@ -1309,18 +1394,18 @@ export default function Home() {
                       </div>
                     </div>
                     <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-medium text-red-700">
-                      {result!.red_flags.length} Issues
+                      {mergedRedFlags.length} Issues
                     </span>
                   </div>
 
-                  {result!.red_flags.length === 0 ? (
+                  {mergedRedFlags.length === 0 ? (
                     <p className="text-[13px]" style={{ color: COLORS.textSecondary }}>
                       No red flags detected.
                     </p>
                   ) : (
                     <>
                       <ul className="space-y-2">
-                        {result!.red_flags.slice(0, 3).map((flag, index) => (
+                        {mergedRedFlags.slice(0, 3).map((flag, index) => (
                           <li
                             key={index}
                             className="flex items-start gap-2 text-[13px]"
@@ -1331,13 +1416,13 @@ export default function Home() {
                           </li>
                         ))}
                       </ul>
-                      {result!.red_flags.length > 3 && (
+                      {mergedRedFlags.length > 3 && (
                         <button
                           type="button"
                           onClick={() => setRedFlagsModalOpen(true)}
                           className="mt-2 text-[12px] font-medium text-red-600 hover:underline"
                         >
-                          Show All ({result!.red_flags.length})
+                          Show All ({mergedRedFlags.length})
                         </button>
                       )}
                     </>
@@ -1395,10 +1480,10 @@ export default function Home() {
                     <div className="flex-1 overflow-y-auto p-4 space-y-4">
                       <section>
                         <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
-                          Red Flags ({result?.red_flags?.length ?? 0})
+                          Red Flags ({mergedRedFlags.length})
                         </h4>
                         <ul className="space-y-2">
-                          {(result?.red_flags ?? []).map((flag, i) => (
+                          {mergedRedFlags.map((flag, i) => (
                             <li key={i} className="flex items-start gap-2 text-[13px]" style={{ color: COLORS.textPrimary }}>
                               <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-red-400" />
                               <span>{flag}</span>
@@ -1497,6 +1582,220 @@ export default function Home() {
                       </button>
                     </div>
                     <div className="flex-1 overflow-y-auto p-4 space-y-5">
+                      {forensicCriticalFlags.length > 0 && (
+                        <section>
+                          <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
+                            Critical flags
+                          </h4>
+                          <ul className="space-y-2">
+                            {forensicCriticalFlags.map((item, i) => (
+                              <li
+                                key={`${item.type}-${i}-${item.detail.slice(0, 24)}`}
+                                className="rounded-lg border px-2.5 py-2"
+                                style={{
+                                  borderColor: COLORS.border,
+                                  backgroundColor: item.severity === "high" ? "#fef2f2" : "#fffbeb",
+                                }}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-[11px] font-semibold" style={{ color: COLORS.textPrimary }}>
+                                    {item.label}
+                                  </span>
+                                  <span
+                                    className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase"
+                                    style={{
+                                      backgroundColor: item.severity === "high" ? "#fecaca" : "#fde68a",
+                                      color: item.severity === "high" ? "#991b1b" : "#92400e",
+                                    }}
+                                  >
+                                    {item.severity}
+                                  </span>
+                                </div>
+                                <p className="mt-1 text-[10px] font-mono uppercase tracking-wide" style={{ color: COLORS.textSecondary }}>
+                                  {item.type}
+                                </p>
+                                <p className="mt-1 text-[11px] leading-snug" style={{ color: COLORS.textPrimary }}>
+                                  {item.detail}
+                                </p>
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
+                      )}
+
+                      {universalContent?.summary && (
+                        <section>
+                          <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
+                            Content Analysis
+                          </h4>
+                          <div className="rounded-lg border p-3 space-y-3" style={{ borderColor: COLORS.border }}>
+                            <div>
+                              <div className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: COLORS.textSecondary }}>
+                                Written dates (extracted)
+                              </div>
+                              {universalContent.summary.writtenDatesDisplay.length === 0 ? (
+                                <p className="mt-1 text-[11px]" style={{ color: COLORS.textSecondary }}>
+                                  None detected in body text.
+                                </p>
+                              ) : (
+                                <ul className="mt-1 list-inside list-disc text-[11px] space-y-0.5" style={{ color: COLORS.textPrimary }}>
+                                  {universalContent.summary.writtenDatesDisplay.slice(0, 20).map((d, i) => (
+                                    <li key={i}>{d}</li>
+                                  ))}
+                                </ul>
+                              )}
+                            </div>
+                            <div className="grid grid-cols-1 gap-2 text-[11px]">
+                              <div>
+                                <span className="font-semibold" style={{ color: COLORS.textSecondary }}>
+                                  Primary language (heuristic):{" "}
+                                </span>
+                                <span style={{ color: COLORS.textPrimary }}>{universalContent.summary.primaryLanguage}</span>
+                              </div>
+                              <div>
+                                <span className="font-semibold" style={{ color: COLORS.textSecondary }}>
+                                  Creator:{" "}
+                                </span>
+                                <span className="break-words" style={{ color: COLORS.textPrimary }}>
+                                  {universalContent.summary.creatorSoftware}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="font-semibold" style={{ color: COLORS.textSecondary }}>
+                                  Producer:{" "}
+                                </span>
+                                <span className="break-words" style={{ color: COLORS.textPrimary }}>
+                                  {universalContent.summary.producerSoftware}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="font-semibold" style={{ color: COLORS.textSecondary }}>
+                                  PDF creation (metadata):{" "}
+                                </span>
+                                <span className="break-words" style={{ color: COLORS.textPrimary }}>
+                                  {universalContent.summary.pdfCreationRaw}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="font-semibold" style={{ color: COLORS.textSecondary }}>
+                                  Creation timezone (if present):{" "}
+                                </span>
+                                <span style={{ color: COLORS.textPrimary }}>{universalContent.summary.timezoneLabel}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </section>
+                      )}
+
+                      {/* Multilingual PDF reader output (local pipeline) */}
+                      <section>
+                        <button
+                          type="button"
+                          onClick={() => setExtractedContentOpen((o) => !o)}
+                          className="mb-2 flex w-full items-center justify-between gap-2 rounded-lg border px-2 py-1.5 text-left hover:bg-slate-50"
+                          style={{ borderColor: COLORS.border }}
+                        >
+                          <h4 className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: COLORS.textSecondary }}>
+                            Extracted Content
+                          </h4>
+                          <ChevronDown
+                            className="h-4 w-4 shrink-0 transition-transform"
+                            style={{
+                              color: COLORS.textSecondary,
+                              transform: extractedContentOpen ? "rotate(180deg)" : undefined,
+                            }}
+                          />
+                        </button>
+                        {extractedContentOpen && (
+                          <div className="rounded-lg border p-3 space-y-3" style={{ borderColor: COLORS.border }}>
+                            {!pdfExtractResult ? (
+                              <p className="text-[11px] leading-snug" style={{ color: COLORS.textSecondary }}>
+                                {result?.filename?.toLowerCase().endsWith(".pdf")
+                                  ? "No local extraction payload yet. If this persists, the server may be missing OCR dependencies (e.g. GraphicsMagick for pdf2pic) or extraction timed out."
+                                  : "Local multilingual extraction runs for PDF files. Upload a PDF to populate this section."}
+                              </p>
+                            ) : (
+                              <>
+                                <div className="text-[11px] space-y-1">
+                                  <div>
+                                    <span className="font-semibold" style={{ color: COLORS.textSecondary }}>
+                                      Detected language:{" "}
+                                    </span>
+                                    <span style={{ color: COLORS.textPrimary }}>{pdfExtractResult.detectedLanguage}</span>
+                                  </div>
+                                  <div>
+                                    <span className="font-semibold" style={{ color: COLORS.textSecondary }}>
+                                      Confidence:{" "}
+                                    </span>
+                                    <span style={{ color: COLORS.textPrimary }}>
+                                      {(Math.min(1, Math.max(0, pdfExtractResult.confidence)) * 100).toFixed(1)}%
+                                    </span>
+                                  </div>
+                                </div>
+                                <div>
+                                  <div className="text-[10px] font-semibold uppercase tracking-wide mb-1" style={{ color: COLORS.textSecondary }}>
+                                    English view (translated or original)
+                                  </div>
+                                  <div
+                                    className="max-h-48 overflow-y-auto rounded border bg-slate-50 px-2 py-1.5 text-[11px] leading-relaxed whitespace-pre-wrap"
+                                    style={{ borderColor: COLORS.border, color: COLORS.textPrimary }}
+                                  >
+                                    {pdfExtractResult.translatedText?.trim()
+                                      ? pdfExtractResult.translatedText
+                                      : "—"}
+                                  </div>
+                                </div>
+                                <div className="space-y-2 text-[11px]">
+                                  <div className="font-semibold text-[10px] uppercase tracking-wide" style={{ color: COLORS.textSecondary }}>
+                                    Extracted fields
+                                  </div>
+                                  <dl className="space-y-1.5">
+                                    <div className="flex flex-col gap-0.5">
+                                      <dt style={{ color: COLORS.textSecondary }}>Dates</dt>
+                                      <dd style={{ color: COLORS.textPrimary }}>
+                                        {pdfExtractResult.extractedFields.dates.length
+                                          ? pdfExtractResult.extractedFields.dates.join(", ")
+                                          : "—"}
+                                      </dd>
+                                    </div>
+                                    <div className="flex flex-col gap-0.5">
+                                      <dt style={{ color: COLORS.textSecondary }}>Issuing institution</dt>
+                                      <dd className="break-words" style={{ color: COLORS.textPrimary }}>
+                                        {pdfExtractResult.extractedFields.issuingInstitution ?? "—"}
+                                      </dd>
+                                    </div>
+                                    <div className="flex flex-col gap-0.5">
+                                      <dt style={{ color: COLORS.textSecondary }}>Reference / case numbers</dt>
+                                      <dd className="break-words" style={{ color: COLORS.textPrimary }}>
+                                        {pdfExtractResult.extractedFields.referenceNumbers.length
+                                          ? pdfExtractResult.extractedFields.referenceNumbers.join(", ")
+                                          : "—"}
+                                      </dd>
+                                    </div>
+                                    <div className="flex flex-col gap-0.5">
+                                      <dt style={{ color: COLORS.textSecondary }}>Names (heuristic)</dt>
+                                      <dd className="break-words" style={{ color: COLORS.textPrimary }}>
+                                        {pdfExtractResult.extractedFields.names.length
+                                          ? pdfExtractResult.extractedFields.names.join(", ")
+                                          : "—"}
+                                      </dd>
+                                    </div>
+                                    <div className="flex flex-col gap-0.5">
+                                      <dt style={{ color: COLORS.textSecondary }}>Signature field</dt>
+                                      <dd style={{ color: COLORS.textPrimary }}>
+                                        {pdfExtractResult.extractedFields.signaturePresent
+                                          ? "Appears filled or followed by content"
+                                          : "Blank / not detected / no label"}
+                                      </dd>
+                                    </div>
+                                  </dl>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </section>
+
                       {/* AI Confidence Details */}
                       <section>
                         <h4 className="text-[11px] font-semibold uppercase tracking-wider mb-2" style={{ color: COLORS.textSecondary }}>
