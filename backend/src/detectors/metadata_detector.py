@@ -44,12 +44,15 @@ class MetadataDetector:
     # High trust banking/document software
     TRUSTED_SOFTWARE = [
         'crystal reports', 'adobe livecycle', 'adobe acrobat',
-        'microsoft word', 'microsoft excel', 'adobe indesign'
+        'microsoft word', 'microsoft excel', 'adobe indesign',
+        # Enterprise / server-side document & PDF generation (not consumer tooling)
+        'aspose', 'telerik', 'syncfusion', 'devexpress', 'docmosis', 'carbone',
+        'pdfsharp', 'itextsharp',
     ]
     
     # Consumer software that shouldn't be used for institutional documents
     CONSUMER_SOFTWARE = [
-        'aspose', 'libreoffice', 'openoffice', 'wps office',
+        'libreoffice', 'openoffice', 'wps office',
         'google docs', 'pages', 'numbers', 'preview'
     ]
     

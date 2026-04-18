@@ -305,8 +305,12 @@ def _extract_bounding_boxes(fused: np.ndarray, threshold: int = 160) -> list[dic
         y = int(stats[i, cv2.CC_STAT_TOP])
         w = int(stats[i, cv2.CC_STAT_WIDTH])
         h = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if w < 40 or h < 40:
+            continue
         region = fused[y:y + h, x:x + w]
         confidence = float(np.mean(region) / 255.0 * 100)
+        if confidence < 65.0:
+            continue
         boxes.append({"x": x, "y": y, "w": w, "h": h, "confidence": round(confidence, 1)})
 
     return sorted(boxes, key=lambda b: b["confidence"], reverse=True)

@@ -171,6 +171,21 @@ class ConfidenceScorer:
             return 1
         return 2
 
+    @staticmethod
+    def _suspicious_regions_forgery_bump(region_count: int) -> int:
+        """
+        Extra forgery/risk contribution from spatial suspicious-region count.
+        Tiers reduce false positives on clean text-heavy PDFs.
+        """
+        n = max(0, int(region_count))
+        if n <= 5:
+            return 0
+        if n <= 20:
+            return int(round((n - 5) / 15 * 10))
+        if n <= 50:
+            return 10 + int(round((n - 20) / 30 * 10))
+        return 20 + min(55, n - 50)
+
     def calculate_confidence(self, all_results):
         """
         Calculate overall confidence score from all detector results.
@@ -290,6 +305,15 @@ class ConfidenceScorer:
                 category_scores["pixel"] = 40
             else:
                 category_scores["pixel"] = 75
+
+        regions = noise_result.get("suspicious_regions") or []
+        region_n = len(regions) if isinstance(regions, list) else 0
+        region_bump = self._suspicious_regions_forgery_bump(region_n)
+        if region_bump:
+            category_scores["pixel"] = min(
+                100,
+                int(category_scores.get("pixel", 0) or 0) + region_bump,
+            )
 
         # Pixel indicators (flags from noise pipeline)
         if 'noise' in all_results:
