@@ -4,8 +4,11 @@ Font Detector Module
 Detects font inconsistencies that indicate text manipulation.
 """
 
+import logging
 import fitz  # PyMuPDF
 from collections import Counter
+
+logger = logging.getLogger(__name__)
 
 
 class FontDetector:
@@ -98,31 +101,37 @@ class FontDetector:
         issues = []
         embedded_count = 0
         not_embedded_count = 0
+        parsed_fonts = 0
         
         for font in fonts:
-            font_name = font.get('name', 'Unknown')
-            # Check if font is embedded (ext field indicates embedding)
-            ext = font.get('ext', '')
-            
-            # In PyMuPDF, embedded fonts typically have specific characteristics
-            # Check font file reference
-            if 'file' in font:
-                embedded_count += 1
-            else:
-                not_embedded_count += 1
-                if font_name not in [i.get('name') for i in issues]:
-                    issues.append({
-                        'name': font_name,
-                        'type': font.get('type', 'Unknown'),
-                        'issue': 'Font not embedded'
-                    })
+            try:
+                font_name = font.get('name', 'Unknown')
+                # Check if font is embedded (ext field indicates embedding)
+                ext = font.get('ext', '')
+
+                # In PyMuPDF, embedded fonts typically have specific characteristics
+                # Check font file reference
+                if 'file' in font:
+                    embedded_count += 1
+                else:
+                    not_embedded_count += 1
+                    if font_name not in [i.get('name') for i in issues]:
+                        issues.append({
+                            'name': font_name,
+                            'type': font.get('type', 'Unknown'),
+                            'issue': 'Font not embedded'
+                        })
+                parsed_fonts += 1
+            except Exception as e:
+                logger.warning("Skipping font entry during embedding check: %s", e)
+                continue
         
         return {
             'issues': issues,
             'embedded_count': embedded_count,
             'not_embedded_count': not_embedded_count,
-            'total_fonts': len(fonts),
-            'embedding_rate': embedded_count / len(fonts) if fonts else 0
+            'total_fonts': parsed_fonts,
+            'embedding_rate': embedded_count / parsed_fonts if parsed_fonts else 0
         }
     
     def _check_font_consistency(self, fonts_by_page):
@@ -133,7 +142,13 @@ class FontDetector:
         # Get unique font names per page
         page_font_sets = []
         for page_fonts in fonts_by_page:
-            font_names = set(f.get('name', 'Unknown') for f in page_fonts)
+            font_names = set()
+            for f in page_fonts:
+                try:
+                    font_names.add(f.get('name', 'Unknown'))
+                except Exception as e:
+                    logger.warning("Skipping font entry during consistency check: %s", e)
+                    continue
             page_font_sets.append(font_names)
         
         # Check if fonts are consistent across pages
@@ -177,11 +192,15 @@ class FontDetector:
         
         system_fonts_found = []
         for font in fonts:
-            font_name = (font.get('name', '') or '').lower()
-            for pattern in system_font_patterns:
-                if pattern in font_name:
-                    system_fonts_found.append(font.get('name', 'Unknown'))
-                    break
+            try:
+                font_name = (font.get('name', '') or '').lower()
+                for pattern in system_font_patterns:
+                    if pattern in font_name:
+                        system_fonts_found.append(font.get('name', 'Unknown'))
+                        break
+            except Exception as e:
+                logger.warning("Skipping font entry during system-font check: %s", e)
+                continue
         
         return {
             'has_system_fonts': len(system_fonts_found) > 0,
@@ -191,7 +210,13 @@ class FontDetector:
     
     def _check_font_variety(self, fonts):
         """Check font variety - too many fonts may indicate editing."""
-        font_names = [f.get('name', 'Unknown') for f in fonts]
+        font_names = []
+        for f in fonts:
+            try:
+                font_names.append(f.get('name', 'Unknown'))
+            except Exception as e:
+                logger.warning("Skipping font entry during variety check: %s", e)
+                continue
         unique_fonts = len(set(font_names))
         font_counts = Counter(font_names)
         

@@ -18,6 +18,20 @@ from scipy.ndimage import uniform_filter
 from typing import Optional, List, Tuple
 
 
+_TRUSTED_PDF_SOFTWARE_TOKENS: Tuple[str, ...] = (
+    "aspose",
+    "quartz",
+    "adobe acrobat",
+    "itext",
+    "microsoft",
+)
+
+
+def _is_trusted_pdf_software(producer: Optional[str], creator: Optional[str]) -> bool:
+    hay = f"{producer or ''} {creator or ''}".lower()
+    return any(tok in hay for tok in _TRUSTED_PDF_SOFTWARE_TOKENS)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # LAYER 1: Multi-Quality ELA
 # ──────────────────────────────────────────────────────────────────────────────
@@ -323,8 +337,8 @@ def _extract_bounding_boxes(fused: np.ndarray, threshold: int = 160) -> list[dic
 class PixelDetector:
     """
     4-Layer Forensic Fusion Engine.
-    Backward compatible: analyze_ela() and analyze_noise() signatures unchanged.
-    New output fields added non-breakingly.
+    Backward compatible: analyze_ela() signature unchanged.
+    analyze_noise() accepts optional producer/creator hints for trusted-software suppression.
     """
 
     def analyze_ela(self, image: Image.Image) -> Image.Image:
@@ -335,7 +349,12 @@ class PixelDetector:
         fused = _fused_map_for_ela_display(image)
         return _apply_colormap_overlay(fused, image)
 
-    def analyze_noise(self, image: Image.Image) -> dict:
+    def analyze_noise(
+        self,
+        image: Image.Image,
+        producer: Optional[str] = None,
+        creator: Optional[str] = None,
+    ) -> dict:
         """
         Returns noise analysis with flags, findings, spatial heatmap,
         and bounding boxes of suspicious regions.
@@ -442,7 +461,8 @@ class PixelDetector:
             s for s in stats[1:]
             if 50 < s[cv2.CC_STAT_AREA] < (img_array.size * 0.15)
         ]
-        if len(isolated) >= 2:
+        trusted_renderer = _is_trusted_pdf_software(producer, creator)
+        if (not trusted_renderer) and len(isolated) > 800:
             flags.append(
                 f'Isolated anomaly clusters ({len(isolated)}) detected — '
                 'consistent with clone-stamp or copy-paste forgery.'

@@ -95,8 +95,12 @@ class AIContentDetector:
         
         # Normalize confidence to 0-100
         confidence_score = min(confidence_score, 100)
-        
-        is_ai_generated = confidence_score >= 30  # Threshold for AI detection
+
+        institutional = self._has_institutional_indicators(text)
+        metrics['institutional_indicators'] = institutional
+
+        ai_flag_threshold = 75.0 if institutional else 60.0
+        is_ai_generated = confidence_score >= ai_flag_threshold
         
         return {
             'is_ai_generated': is_ai_generated,
@@ -104,6 +108,25 @@ class AIContentDetector:
             'indicators': indicators,
             'metrics': metrics
         }
+
+    @staticmethod
+    def _has_institutional_indicators(text: str) -> bool:
+        """
+        Heuristic: formal institutional / public-sector documents often score higher on
+        templated-language heuristics; require a higher confidence before AI flagging.
+        """
+        t = (text or "").lower()
+        if not t.strip():
+            return False
+
+        if "gov.uk" in t or "nhs" in t or "homeoffice" in t:
+            return True
+
+        # Common university / school domains (".ac.uk" covers most UK universities)
+        if ".ac.uk" in t or ".edu" in t or "university" in t:
+            return True
+
+        return False
     
     def _calculate_punctuation_diversity(self, text):
         """Calculate punctuation diversity (ratio of unique punctuation to total punctuation)."""

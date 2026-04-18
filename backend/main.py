@@ -105,7 +105,13 @@ def run_full_analysis(filename: str, file_bytes: bytes) -> Dict[str, Any]:
         display_image = Image.open(file_stream)
 
     ela_heatmap = pixel_detector.analyze_ela(display_image)
-    noise_result = pixel_detector.analyze_noise(display_image)
+    _meta_raw = (metadata_result or {}).get("raw_data") or {}
+    _pdf_meta = _meta_raw.get("pdf_metadata") or {}
+    _producer_hint = str(_meta_raw.get("producer") or _pdf_meta.get("producer") or "")
+    _creator_hint = str(_meta_raw.get("creator") or _pdf_meta.get("creator") or "")
+    noise_result = pixel_detector.analyze_noise(
+        display_image, producer=_producer_hint, creator=_creator_hint
+    )
 
     ai_result = None
     if file_type == "pdf" and pdf_doc:
