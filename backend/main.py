@@ -1,4 +1,5 @@
 import base64
+import gc
 import logging
 import os
 from datetime import datetime
@@ -54,15 +55,47 @@ supabase: Optional[Client] = None
 if _supabase_url and _supabase_key:
     supabase = create_client(_supabase_url, _supabase_key)
 
+# Render free tier has 512MB RAM — keep images and uploads bounded.
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+MAX_ANALYSIS_PX = int(os.getenv("MAX_ANALYSIS_PX", "1400"))
+PDF_RENDER_SCALE = float(os.getenv("PDF_RENDER_SCALE", "1.25"))
+
+
+def constrain_image_size(image: Image.Image, max_px: int = MAX_ANALYSIS_PX) -> Image.Image:
+    """Downscale large page renders before numpy/opencv forensic passes."""
+    width, height = image.size
+    longest = max(width, height)
+    if longest <= max_px:
+        return image
+    scale = max_px / longest
+    new_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+    return image.resize(new_size, Image.Resampling.LANCZOS)
+
+
+def pdf_first_page_image(pdf_doc: fitz.Document, scale: float = PDF_RENDER_SCALE) -> Image.Image:
+    """Render first PDF page to RGB without reopening the document."""
+    first_page = pdf_doc[0]
+    matrix = fitz.Matrix(scale, scale)
+    pix = first_page.get_pixmap(matrix=matrix, alpha=False)
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    pix = None
+    return constrain_image_size(img)
+
+
+def image_to_jpeg_base64(image: Image.Image, quality: int = 82) -> str:
+    buf = BytesIO()
+    rgb = image if image.mode == "RGB" else image.convert("RGB")
+    rgb.save(buf, format="JPEG", quality=quality, optimize=True)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
 
 def pdf_to_image(pdf_bytes: bytes) -> Image.Image:
     """Convert first page of PDF to PIL Image."""
     pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    first_page = pdf_doc[0]
-    pix = first_page.get_pixmap(matrix=fitz.Matrix(2, 2))
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-    pdf_doc.close()
-    return img
+    try:
+        return pdf_first_page_image(pdf_doc)
+    finally:
+        pdf_doc.close()
 
 
 def get_file_type(filename: str) -> str:
@@ -99,20 +132,22 @@ def run_full_analysis(filename: str, file_bytes: bytes) -> Dict[str, Any]:
 
     metadata_result = metadata_detector.analyze(BytesIO(file_bytes), file_type, filename)
 
-    if file_type == "pdf":
-        display_image = pdf_to_image(file_bytes)
+    if file_type == "pdf" and pdf_doc:
+        display_image = pdf_first_page_image(pdf_doc)
     else:
         file_stream.seek(0)
-        display_image = Image.open(file_stream)
+        display_image = constrain_image_size(Image.open(file_stream))
 
-    ela_heatmap = pixel_detector.analyze_ela(display_image)
     _meta_raw = (metadata_result or {}).get("raw_data") or {}
     _pdf_meta = _meta_raw.get("pdf_metadata") or {}
     _producer_hint = str(_meta_raw.get("producer") or _pdf_meta.get("producer") or "")
     _creator_hint = str(_meta_raw.get("creator") or _pdf_meta.get("creator") or "")
-    noise_result = pixel_detector.analyze_noise(
+
+    forensic = pixel_detector.analyze_forensics(
         display_image, producer=_producer_hint, creator=_creator_hint
     )
+    ela_heatmap = forensic["ela_heatmap"]
+    noise_result = forensic["noise"]
 
     ai_result = None
     uc_body_text = ""
@@ -241,6 +276,7 @@ def run_full_analysis(filename: str, file_bytes: bytes) -> Dict[str, Any]:
     if pdf_doc:
         pdf_doc.close()
 
+    gc.collect()
     return analysis
 
 
@@ -304,7 +340,14 @@ async def analyze_document(file: UploadFile = File(...), doc_type_key: str = For
 
     try:
         file_bytes = await file.read()
+        if len(file_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
+            )
+
         analysis = run_full_analysis(file.filename, file_bytes)
+        del file_bytes
         policy_result = policy_engine.evaluate(analysis, doc_type_key)
 
         forgery_score = analysis["metadata"].get("risk_score", 0)
@@ -315,19 +358,15 @@ async def analyze_document(file: UploadFile = File(...), doc_type_key: str = For
         preview_image_media_type = None
         display_image = analysis.get("display_image")
         if display_image is not None:
-            buf = BytesIO()
-            display_image.save(buf, format="PNG")
-            preview_image_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-            preview_image_media_type = "image/png"
+            preview_image_base64 = image_to_jpeg_base64(display_image)
+            preview_image_media_type = "image/jpeg"
+            analysis["display_image"] = None
 
         ela_image_base64 = None
         ela_heatmap = analysis.get("ela_heatmap")
         if ela_heatmap is not None:
-            buf_ela = BytesIO()
-            if ela_heatmap.mode != "RGB":
-                ela_heatmap = ela_heatmap.convert("RGB")
-            ela_heatmap.save(buf_ela, format="PNG")
-            ela_image_base64 = base64.b64encode(buf_ela.getvalue()).decode("utf-8")
+            ela_image_base64 = image_to_jpeg_base64(ela_heatmap)
+            analysis["ela_heatmap"] = None
 
         ai_content = analysis.get("ai_content") or {}
         ai_confidence = ai_content.get("confidence")
@@ -406,11 +445,8 @@ async def analyze_document(file: UploadFile = File(...), doc_type_key: str = For
         noise_heatmap_base64 = None
         noise_heatmap_img = (analysis.get("noise") or {}).get("noise_heatmap")
         if noise_heatmap_img is not None:
-            buf_noise = BytesIO()
-            if noise_heatmap_img.mode != "RGB":
-                noise_heatmap_img = noise_heatmap_img.convert("RGB")
-            noise_heatmap_img.save(buf_noise, format="PNG")
-            noise_heatmap_base64 = base64.b64encode(buf_noise.getvalue()).decode("utf-8")
+            noise_heatmap_base64 = image_to_jpeg_base64(noise_heatmap_img)
+            analysis["noise"]["noise_heatmap"] = None
         if noise_heatmap_base64 is not None:
             out["noise_heatmap_base64"] = noise_heatmap_base64
 
@@ -447,6 +483,8 @@ async def analyze_document(file: UploadFile = File(...), doc_type_key: str = For
                 print(f"SUPABASE ERROR: {e}")
                 logging.exception("Supabase insert failed: %s", e)
 
+        analysis.clear()
+        gc.collect()
         return out
     except HTTPException:
         raise

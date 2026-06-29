@@ -12,10 +12,11 @@ All layers fused into one authoritative heatmap with bounding box output.
 
 from PIL import Image
 import cv2
+import gc
 import numpy as np
 from io import BytesIO
 from scipy.ndimage import uniform_filter
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 
 
 _TRUSTED_PDF_SOFTWARE_TOKENS: Tuple[str, ...] = (
@@ -244,27 +245,39 @@ def _reduce_structural_false_positives(fused: np.ndarray, image: Image.Image) ->
     return np.clip(combined, 0, 255).astype(np.float32)
 
 
+def _get_detection_maps(image: Image.Image) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute ELA, noise, and DCT maps once for reuse across outputs."""
+    work = image if image.mode == "RGB" else image.convert("RGB")
+    return _ela_map(work), _noise_map(work), _dct_map(work)
+
+
+def _fused_from_maps(
+    ela_map_arr: np.ndarray,
+    noise_map_arr: np.ndarray,
+    dct_map_arr: np.ndarray,
+    *,
+    for_ela_display: bool,
+) -> np.ndarray:
+    ela_has_signal = ela_map_arr.max() > 10
+    if for_ela_display:
+        if ela_has_signal:
+            maps = [(ela_map_arr, 0.30), (noise_map_arr, 0.35), (dct_map_arr, 0.35)]
+        else:
+            maps = [(noise_map_arr, 0.45), (dct_map_arr, 0.55)]
+    elif ela_has_signal:
+        maps = [(noise_map_arr, 0.40), (ela_map_arr, 0.25), (dct_map_arr, 0.35)]
+    else:
+        maps = [(noise_map_arr, 0.55), (dct_map_arr, 0.45)]
+    return _fuse_maps(maps)
+
+
 def _fused_map_for_ela_display(image: Image.Image) -> np.ndarray:
     """
     Single fused map used for the ELA-tab heatmap (before colormap).
     Bounding boxes must be derived from this same tensor so overlays align.
     """
-    ela = _ela_map(image)
-    noise = _noise_map(image)
-    dct = _dct_map(image)
-    ela_has_signal = ela.max() > 10
-    if ela_has_signal:
-        maps = [
-            (ela, 0.30),
-            (noise, 0.35),
-            (dct, 0.35),
-        ]
-    else:
-        maps = [
-            (noise, 0.45),
-            (dct, 0.55),
-        ]
-    fused = _fuse_maps(maps)
+    ela, noise, dct = _get_detection_maps(image)
+    fused = _fused_from_maps(ela, noise, dct, for_ela_display=True)
     return _reduce_structural_false_positives(fused, image)
 
 
@@ -330,6 +343,112 @@ def _extract_bounding_boxes(fused: np.ndarray, threshold: int = 160) -> list[dic
     return sorted(boxes, key=lambda b: b["confidence"], reverse=True)
 
 
+def _build_noise_analysis(
+    image: Image.Image,
+    ela_map_arr: np.ndarray,
+    noise_map_arr: np.ndarray,
+    dct_map_arr: np.ndarray,
+    fused_for_ela_boxes: np.ndarray,
+    *,
+    producer: Optional[str] = None,
+    creator: Optional[str] = None,
+) -> dict:
+    """Build noise analysis dict from precomputed detection maps."""
+    flags: List[str] = []
+    findings: List[str] = []
+
+    img_array = np.array(image.convert("L"), dtype=np.float32)
+    laplacian = cv2.Laplacian(np.asarray(img_array, dtype=np.float64), cv2.CV_64F)
+    variance = float(laplacian.var())
+
+    if variance < 100:
+        flags.append("Potential Image Smoothing Detected")
+        findings.append(
+            f"Low noise variance ({variance:.2f}) detected. "
+            "Consistent with edited or smoothed regions."
+        )
+    else:
+        findings.append(
+            f"Normal noise variance ({variance:.2f}). "
+            "No global smoothing indicators."
+        )
+
+    ela_q60_mean: Optional[float] = None
+    try:
+        _rgb = image if image.mode == "RGB" else image.convert("RGB")
+        original_np = np.array(_rgb, dtype=np.float32)
+        buf_test = BytesIO()
+        _rgb.save(buf_test, format="JPEG", quality=95)
+        buf_test.seek(0)
+        test_np = np.array(Image.open(buf_test).convert("RGB"), dtype=np.float32)
+        if np.abs(original_np - test_np).mean() >= 0.3:
+            buf60 = BytesIO()
+            _rgb.save(buf60, format="JPEG", quality=60)
+            buf60.seek(0)
+            resaved60 = np.array(Image.open(buf60).convert("RGB"), dtype=np.float32)
+            diff60 = np.abs(original_np - resaved60).mean(axis=2)
+            ela_q60_mean = float(diff60.mean())
+    except Exception:
+        ela_q60_mean = None
+
+    dct_blocks_z_gt_1_5: Optional[int] = None
+    try:
+        img_l = np.array(image.convert("L"), dtype=np.float32)
+        h0, w0 = img_l.shape
+        block_size = 8
+        energies: List[float] = []
+        for y in range(0, h0 - block_size, block_size):
+            for x in range(0, w0 - block_size, block_size):
+                block = img_l[y : y + block_size, x : x + block_size]
+                dct_block = cv2.dct(block)
+                energies.append(float(np.sum(np.abs(dct_block[4:, 4:]))))
+        if energies:
+            mean_e = float(np.mean(energies))
+            std_e = float(np.std(energies))
+            if std_e >= 1e-8:
+                dct_blocks_z_gt_1_5 = sum(1 for e in energies if (e - mean_e) / std_e > 1.5)
+            else:
+                dct_blocks_z_gt_1_5 = 0
+    except Exception:
+        dct_blocks_z_gt_1_5 = None
+
+    fused = _reduce_structural_false_positives(
+        _fused_from_maps(ela_map_arr, noise_map_arr, dct_map_arr, for_ela_display=False),
+        image,
+    )
+    boxes = _extract_bounding_boxes(fused_for_ela_boxes, threshold=160)
+
+    if boxes:
+        flags.append(f"{len(boxes)} suspicious region(s) detected with spatial bounding boxes.")
+        for i, b in enumerate(boxes[:3], 1):
+            findings.append(
+                f'Region {i}: x={b["x"]}, y={b["y"]}, '
+                f'size={b["w"]}×{b["h"]}px, confidence={b["confidence"]}%.'
+            )
+
+    high_var_mask = (fused > 160).astype(np.uint8)
+    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(high_var_mask)
+    isolated = [s for s in stats[1:] if 50 < s[cv2.CC_STAT_AREA] < (img_array.size * 0.15)]
+    trusted_renderer = _is_trusted_pdf_software(producer, creator)
+    if (not trusted_renderer) and len(isolated) > 800:
+        flags.append(
+            f"Isolated anomaly clusters ({len(isolated)}) detected — "
+            "consistent with clone-stamp or copy-paste forgery."
+        )
+
+    noise_heatmap = _apply_colormap_overlay(fused, image)
+
+    return {
+        "variance": variance,
+        "ela_q60_mean": ela_q60_mean,
+        "dct_blocks_z_gt_1_5": dct_blocks_z_gt_1_5,
+        "flags": flags,
+        "findings": " ".join(findings),
+        "noise_heatmap": noise_heatmap,
+        "suspicious_regions": boxes,
+    }
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # PUBLIC CLASS — same interface as before, fully backward compatible
 # ──────────────────────────────────────────────────────────────────────────────
@@ -340,6 +459,35 @@ class PixelDetector:
     Backward compatible: analyze_ela() signature unchanged.
     analyze_noise() accepts optional producer/creator hints for trusted-software suppression.
     """
+
+    def analyze_forensics(
+        self,
+        image: Image.Image,
+        producer: Optional[str] = None,
+        creator: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Single-pass ELA + noise analysis. Prefer this over separate analyze_ela/noise
+        calls to avoid duplicating heavy numpy/opencv work (important on 512MB hosts).
+        """
+        ela_map_arr, noise_map_arr, dct_map_arr = _get_detection_maps(image)
+        fused_ela = _reduce_structural_false_positives(
+            _fused_from_maps(ela_map_arr, noise_map_arr, dct_map_arr, for_ela_display=True),
+            image,
+        )
+        ela_heatmap = _apply_colormap_overlay(fused_ela, image)
+        noise_result = _build_noise_analysis(
+            image,
+            ela_map_arr,
+            noise_map_arr,
+            dct_map_arr,
+            fused_ela,
+            producer=producer,
+            creator=creator,
+        )
+        del ela_map_arr, noise_map_arr, dct_map_arr, fused_ela
+        gc.collect()
+        return {"ela_heatmap": ela_heatmap, "noise": noise_result}
 
     def analyze_ela(self, image: Image.Image) -> Image.Image:
         """
@@ -359,123 +507,17 @@ class PixelDetector:
         Returns noise analysis with flags, findings, spatial heatmap,
         and bounding boxes of suspicious regions.
         """
-        flags = []
-        findings = []
-
-        img_array = np.array(image.convert('L'), dtype=np.float32)
-        # OpenCV 4.13+ rejects Laplacian float32→float64; use float64 input with CV_64F
-        laplacian = cv2.Laplacian(np.asarray(img_array, dtype=np.float64), cv2.CV_64F)
-        variance = float(laplacian.var())
-
-        if variance < 100:
-            flags.append('Potential Image Smoothing Detected')
-            findings.append(
-                f'Low noise variance ({variance:.2f}) detected. '
-                'Consistent with edited or smoothed regions.'
-            )
-        else:
-            findings.append(
-                f'Normal noise variance ({variance:.2f}). '
-                'No global smoothing indicators.'
-            )
-
-        noise_map_arr = _noise_map(image)
-        ela_map_arr   = _ela_map(image)
-        dct_map_arr   = _dct_map(image)
-
-        # Calibration metrics for ConfidenceScorer (same image as live pipeline)
-        ela_q60_mean: Optional[float] = None
-        try:
-            if image.mode != "RGB":
-                _rgb = image.convert("RGB")
-            else:
-                _rgb = image
-            original_np = np.array(_rgb, dtype=np.float32)
-            buf_test = BytesIO()
-            _rgb.save(buf_test, format="JPEG", quality=95)
-            buf_test.seek(0)
-            test_np = np.array(Image.open(buf_test).convert("RGB"), dtype=np.float32)
-            if np.abs(original_np - test_np).mean() >= 0.3:
-                buf60 = BytesIO()
-                _rgb.save(buf60, format="JPEG", quality=60)
-                buf60.seek(0)
-                resaved60 = np.array(Image.open(buf60).convert("RGB"), dtype=np.float32)
-                diff60 = np.abs(original_np - resaved60).mean(axis=2)
-                ela_q60_mean = float(diff60.mean())
-        except Exception:
-            ela_q60_mean = None
-
-        dct_blocks_z_gt_1_5: Optional[int] = None
-        try:
-            img_l = np.array(image.convert("L"), dtype=np.float32)
-            h0, w0 = img_l.shape
-            block_size = 8
-            energies: List[float] = []
-            for y in range(0, h0 - block_size, block_size):
-                for x in range(0, w0 - block_size, block_size):
-                    block = img_l[y : y + block_size, x : x + block_size]
-                    dct_block = cv2.dct(block)
-                    energies.append(float(np.sum(np.abs(dct_block[4:, 4:]))))
-            if energies:
-                mean_e = float(np.mean(energies))
-                std_e = float(np.std(energies))
-                if std_e >= 1e-8:
-                    dct_blocks_z_gt_1_5 = sum(1 for e in energies if (e - mean_e) / std_e > 1.5)
-                else:
-                    dct_blocks_z_gt_1_5 = 0
-        except Exception:
-            dct_blocks_z_gt_1_5 = None
-
-        ela_has_signal = ela_map_arr.max() > 10
-        if ela_has_signal:
-            fused = _fuse_maps([
-                (noise_map_arr, 0.40),
-                (ela_map_arr,   0.25),
-                (dct_map_arr,   0.35),
-            ])
-        else:
-            fused = _fuse_maps([
-                (noise_map_arr, 0.55),
-                (dct_map_arr,   0.45),
-            ])
-
-        fused = _reduce_structural_false_positives(fused, image)
-
-        # Boxes must match the ELA-tab heatmap (same fusion weights + post-process)
-        fused_for_ela_boxes = _fused_map_for_ela_display(image)
-        boxes = _extract_bounding_boxes(fused_for_ela_boxes, threshold=160)
-
-        if boxes:
-            flags.append(
-                f'{len(boxes)} suspicious region(s) detected with spatial bounding boxes.'
-            )
-            for i, b in enumerate(boxes[:3], 1):
-                findings.append(
-                    f'Region {i}: x={b["x"]}, y={b["y"]}, '
-                    f'size={b["w"]}×{b["h"]}px, confidence={b["confidence"]}%.'
-                )
-
-        high_var_mask = (fused > 160).astype(np.uint8)
-        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(high_var_mask)
-        isolated = [
-            s for s in stats[1:]
-            if 50 < s[cv2.CC_STAT_AREA] < (img_array.size * 0.15)
-        ]
-        trusted_renderer = _is_trusted_pdf_software(producer, creator)
-        if (not trusted_renderer) and len(isolated) > 800:
-            flags.append(
-                f'Isolated anomaly clusters ({len(isolated)}) detected — '
-                'consistent with clone-stamp or copy-paste forgery.'
-            )
-
-        noise_heatmap = _apply_colormap_overlay(fused, image)
-
-        return {
-            'variance': variance,
-            'ela_q60_mean': ela_q60_mean,
-            'dct_blocks_z_gt_1_5': dct_blocks_z_gt_1_5,
-            'flags': flags,
-            'findings': ' '.join(findings),
-            'noise_heatmap': noise_heatmap,
-            'suspicious_regions': boxes,
-        }
+        ela_map_arr, noise_map_arr, dct_map_arr = _get_detection_maps(image)
+        fused_ela = _reduce_structural_false_positives(
+            _fused_from_maps(ela_map_arr, noise_map_arr, dct_map_arr, for_ela_display=True),
+            image,
+        )
+        return _build_noise_analysis(
+            image,
+            ela_map_arr,
+            noise_map_arr,
+            dct_map_arr,
+            fused_ela,
+            producer=producer,
+            creator=creator,
+        )
