@@ -289,6 +289,11 @@ def collect_red_flags(analysis: Dict[str, Any]) -> List[str]:
     return deduped
 
 
+@app.get("/api/health")
+async def health() -> Dict[str, str]:
+    return {"status": "ok"}
+
+
 @app.post("/api/analyze")
 async def analyze_document(file: UploadFile = File(...), doc_type_key: str = Form(...)) -> Dict[str, Any]:
     """

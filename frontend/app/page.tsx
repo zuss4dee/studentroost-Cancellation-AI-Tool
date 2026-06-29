@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { postAnalyze, warmAnalysisServer } from "../lib/analyzeApi";
 import { supabase } from "../lib/supabaseClient";
 import { explainResult } from "../lib/explainResult";
 import type { PdfExtractionResult } from "../lib/pdfContentTypes";
@@ -194,6 +195,10 @@ export default function Home() {
   const [loadingText, setLoadingText] = useState("Encrypting & Uploading...");
 
   useEffect(() => {
+    void warmAnalysisServer();
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     async function loadRecentScans() {
       if (!supabase) return;
@@ -288,25 +293,15 @@ export default function Home() {
       setPdfExtractResult(null);
       setForensicExplanation(null);
       setActiveView("result");
-      const formAnalyze = new FormData();
-      formAnalyze.append("file", file);
-      formAnalyze.append("doc_type_key", docTypeKey);
 
       const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
       const extractForm = new FormData();
       extractForm.append("file", file);
 
       try {
-        const analyzePromise = fetch("https://studentroost-cancellation-ai-tool.onrender.com/api/analyze", {
-          method: "POST",
-          body: formAnalyze,
-        }).then(async (res) => {
-          if (!res.ok) {
-            const err = await res.json().catch(() => ({}));
-            throw new Error((err as { detail?: string }).detail ?? `Request failed: ${res.status}`);
-          }
-          return res.json() as Promise<AnalyzeResponse>;
-        });
+        const analyzePromise = postAnalyze(file, docTypeKey, (attempt) => {
+          setLoadingText(`Waking up analysis server (attempt ${attempt})…`);
+        }) as Promise<AnalyzeResponse>;
 
         const extractPromise: Promise<PdfExtractionResult | null> = isPdf
           ? fetch("/api/extract-pdf", { method: "POST", body: extractForm }).then(async (res) => {
