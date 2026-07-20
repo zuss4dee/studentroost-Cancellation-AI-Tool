@@ -2,7 +2,7 @@
 
 import React, { useState, useRef } from "react";
 import { X, UploadCloud, FileText, Download, Loader2, CheckCircle2, AlertCircle, Sparkles } from "lucide-react";
-import { translateForeignIdJson, translateForeignIdAndDownloadPdf } from "../lib/translateIdApi";
+import { translateForeignIdJson } from "../lib/translateIdApi";
 
 interface ForeignIdTranslatorModalProps {
   isOpen: boolean;
@@ -53,6 +53,8 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
     }
   };
 
+  const [loadingStatus, setLoadingStatus] = useState<string>("Extracting & translating ID...");
+
   const handleTranslateAndDownload = async () => {
     if (!selectedFile) {
       setError("Please select a foreign ID card or passport file first.");
@@ -62,10 +64,11 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
     setLoading(true);
     setError(null);
     setSuccessMessage(null);
+    setLoadingStatus("Connecting to Gemini 1.5 Flash Vision engine...");
 
     try {
       // 1. Call translation endpoint which returns JSON + base64 PDF
-      const result = await translateForeignIdJson(selectedFile);
+      const result = await translateForeignIdJson(selectedFile, (status) => setLoadingStatus(status));
       setTranslatedData(result.translated_data);
       setPdfBase64(result.pdf_base64);
 
@@ -299,8 +302,8 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
             >
               {loading ? (
                 <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Translating & Compiling PDF...</span>
+                  <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                  <span>{loadingStatus}</span>
                 </>
               ) : (
                 <>

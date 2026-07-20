@@ -12,6 +12,7 @@ import fitz  # PyMuPDF
 from supabase import create_client, Client
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from PIL import Image
 
 from .src.detectors.metadata_detector import MetadataDetector
@@ -519,18 +520,20 @@ async def translate_foreign_id_endpoint(
                 detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
             )
 
-        # 1. Translate Foreign ID via Gemini 1.5 Flash
+        # 1. Translate Foreign ID via Gemini 1.5 Flash (in threadpool to prevent blocking)
         try:
-            translated_data = translate_foreign_id(file_bytes, file.filename)
+            translated_data = await run_in_threadpool(translate_foreign_id, file_bytes, file.filename)
         except ValueError as val_err:
             raise HTTPException(status_code=400, detail=str(val_err))
         except Exception as exc:
+            logging.exception("Translation failed: %s", exc)
             raise HTTPException(status_code=500, detail=f"Translation failed: {exc}")
 
         # 2. Generate PDF Summary via ReportLab
         try:
-            pdf_buffer = generate_translated_id_pdf(translated_data, file.filename)
+            pdf_buffer = await run_in_threadpool(generate_translated_id_pdf, translated_data, file.filename)
         except Exception as exc:
+            logging.exception("PDF generation failed: %s", exc)
             raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
 
         # 3. Return downloadable PDF file
@@ -545,6 +548,7 @@ async def translate_foreign_id_endpoint(
     except HTTPException:
         raise
     except Exception as exc:
+        logging.exception("Request failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Request failed: {exc}") from exc
 
 
@@ -567,8 +571,8 @@ async def translate_foreign_id_json_endpoint(
                 detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
             )
 
-        translated_data = translate_foreign_id(file_bytes, file.filename)
-        pdf_buffer = generate_translated_id_pdf(translated_data, file.filename)
+        translated_data = await run_in_threadpool(translate_foreign_id, file_bytes, file.filename)
+        pdf_buffer = await run_in_threadpool(generate_translated_id_pdf, translated_data, file.filename)
         pdf_b64 = base64.b64encode(pdf_buffer.getvalue()).decode("utf-8")
 
         return {
@@ -580,5 +584,7 @@ async def translate_foreign_id_json_endpoint(
     except ValueError as val_err:
         raise HTTPException(status_code=400, detail=str(val_err))
     except Exception as exc:
+        logging.exception("Translation failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Translation failed: {exc}") from exc
+
 
