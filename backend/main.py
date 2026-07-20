@@ -29,10 +29,26 @@ from .src.detectors.universal_content_checks import run_universal_content_checks
 from .src.policy_engine import PolicyEngine
 
 try:
-    from .src.foreign_id_translator import translate_foreign_id
+    from .src.foreign_id_translator import (
+        translate_foreign_id,
+        get_model_debug_info,
+        MissingApiKeyError,
+        InvalidApiKeyError,
+        InvalidModelError,
+        GeminiApiFailureError,
+        JsonParsingError,
+    )
     from .src.report_generator import generate_translated_id_pdf
 except ImportError:
-    from src.foreign_id_translator import translate_foreign_id
+    from src.foreign_id_translator import (
+        translate_foreign_id,
+        get_model_debug_info,
+        MissingApiKeyError,
+        InvalidApiKeyError,
+        InvalidModelError,
+        GeminiApiFailureError,
+        JsonParsingError,
+    )
     from src.report_generator import generate_translated_id_pdf
 
 
@@ -56,6 +72,8 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 print("--- STARTUP CHECK ---")
 print(f"SUPABASE_URL found: {bool(os.getenv('SUPABASE_URL'))}")
 print(f"SUPABASE_KEY found: {bool(os.getenv('SUPABASE_KEY'))}")
+_gemini_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+print(f"GEMINI_API_KEY found: {bool(_gemini_key)} (length: {len(_gemini_key) if _gemini_key else 0})")
 
 # Supabase client (optional: only if env vars set)
 _supabase_url = os.getenv("SUPABASE_URL")
@@ -501,12 +519,20 @@ async def analyze_document(file: UploadFile = File(...), doc_type_key: str = For
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
 
 
+@app.get("/api/debug/gemini-models")
+async def debug_gemini_models() -> Dict[str, Any]:
+    """
+    Debug endpoint that lists all Gemini models available to the configured API key.
+    """
+    return get_model_debug_info()
+
+
 @app.post("/api/translate-foreign-id")
 async def translate_foreign_id_endpoint(
     file: UploadFile = File(...),
 ):
     """
-    Receives an uploaded foreign ID (image or PDF), calls Gemini 1.5 Flash to extract & translate details,
+    Receives an uploaded foreign ID (image or PDF), calls Gemini Flash vision to extract & translate details,
     generates a ReportLab PDF summary, and returns the PDF file as a downloadable attachment.
     """
     if not file.filename:
@@ -520,9 +546,19 @@ async def translate_foreign_id_endpoint(
                 detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
             )
 
-        # 1. Translate Foreign ID via Gemini 1.5 Flash (in threadpool to prevent blocking)
+        # 1. Translate Foreign ID via Gemini Flash
         try:
             translated_data = await run_in_threadpool(translate_foreign_id, file_bytes, file.filename)
+        except MissingApiKeyError as err:
+            raise HTTPException(status_code=401, detail=str(err))
+        except InvalidApiKeyError as err:
+            raise HTTPException(status_code=403, detail=str(err))
+        except InvalidModelError as err:
+            raise HTTPException(status_code=404, detail=str(err))
+        except JsonParsingError as err:
+            raise HTTPException(status_code=422, detail=str(err))
+        except GeminiApiFailureError as err:
+            raise HTTPException(status_code=502, detail=str(err))
         except ValueError as val_err:
             raise HTTPException(status_code=400, detail=str(val_err))
         except Exception as exc:
@@ -557,7 +593,7 @@ async def translate_foreign_id_json_endpoint(
     file: UploadFile = File(...),
 ):
     """
-    Receives an uploaded foreign ID, extracts & translates fields using Gemini 1.5 Flash,
+    Receives an uploaded foreign ID, extracts & translates fields using Gemini Flash vision,
     and returns both raw translated JSON and a base64 encoded PDF string.
     """
     if not file.filename:
@@ -571,7 +607,21 @@ async def translate_foreign_id_json_endpoint(
                 detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
             )
 
-        translated_data = await run_in_threadpool(translate_foreign_id, file_bytes, file.filename)
+        try:
+            translated_data = await run_in_threadpool(translate_foreign_id, file_bytes, file.filename)
+        except MissingApiKeyError as err:
+            raise HTTPException(status_code=401, detail=str(err))
+        except InvalidApiKeyError as err:
+            raise HTTPException(status_code=403, detail=str(err))
+        except InvalidModelError as err:
+            raise HTTPException(status_code=404, detail=str(err))
+        except JsonParsingError as err:
+            raise HTTPException(status_code=422, detail=str(err))
+        except GeminiApiFailureError as err:
+            raise HTTPException(status_code=502, detail=str(err))
+        except ValueError as val_err:
+            raise HTTPException(status_code=400, detail=str(val_err))
+
         pdf_buffer = await run_in_threadpool(generate_translated_id_pdf, translated_data, file.filename)
         pdf_b64 = base64.b64encode(pdf_buffer.getvalue()).decode("utf-8")
 
@@ -581,10 +631,11 @@ async def translate_foreign_id_json_endpoint(
             "translated_data": translated_data,
             "pdf_base64": pdf_b64,
         }
-    except ValueError as val_err:
-        raise HTTPException(status_code=400, detail=str(val_err))
+    except HTTPException:
+        raise
     except Exception as exc:
         logging.exception("Translation failed: %s", exc)
         raise HTTPException(status_code=500, detail=f"Translation failed: {exc}") from exc
+
 
 
