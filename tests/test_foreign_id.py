@@ -48,8 +48,10 @@ def test_render_overlay_image():
             "translated_text": "Surname: GARCIA",
         }
     ]
-    annotated, count_drawn = render_overlay_image(img, sample_boxes)
+    annotated, count_drawn, placements = render_overlay_image(img, sample_boxes)
     assert annotated.size == (800, 600)
     assert count_drawn == 1
+    assert len(placements) == 1
+
 
 

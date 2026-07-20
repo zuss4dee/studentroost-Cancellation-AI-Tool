@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useRef } from "react";
-import { X, UploadCloud, Download, Loader2, CheckCircle2, AlertCircle, Sparkles, Image as ImageIcon, FileText } from "lucide-react";
-import { translateForeignIdJson } from "../lib/translateIdApi";
+import { X, UploadCloud, Download, Loader2, CheckCircle2, AlertCircle, Sparkles, Image as ImageIcon, FileText, Eye, EyeOff, Info } from "lucide-react";
+import { translateForeignIdJson, PlacementItem } from "../lib/translateIdApi";
 
 interface ForeignIdTranslatorModalProps {
   isOpen: boolean;
@@ -16,7 +16,11 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
   const [error, setError] = useState<string | null>(null);
   const [translatedData, setTranslatedData] = useState<Record<string, any> | null>(null);
   const [annotatedImageBase64, setAnnotatedImageBase64] = useState<string | null>(null);
+  const [originalImageBase64, setOriginalImageBase64] = useState<string | null>(null);
   const [pdfBase64, setPdfBase64] = useState<string | null>(null);
+  const [placements, setPlacements] = useState<PlacementItem[]>([]);
+  const [showOverlay, setShowOverlay] = useState(true);
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [loadingStatus, setLoadingStatus] = useState<string>("Extracting & translating ID...");
 
@@ -30,7 +34,9 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
       setError(null);
       setTranslatedData(null);
       setAnnotatedImageBase64(null);
+      setOriginalImageBase64(null);
       setPdfBase64(null);
+      setPlacements([]);
       setSuccessMessage(null);
     }
   };
@@ -52,7 +58,9 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
       setError(null);
       setTranslatedData(null);
       setAnnotatedImageBase64(null);
+      setOriginalImageBase64(null);
       setPdfBase64(null);
+      setPlacements([]);
       setSuccessMessage(null);
     }
   };
@@ -69,28 +77,33 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
     setLoadingStatus("Connecting to Gemini Vision engine...");
 
     try {
-      // 1. Call translation endpoint which returns translated overlay image + JSON
       const result = await translateForeignIdJson(selectedFile, (status) => setLoadingStatus(status));
       setTranslatedData(result.translated_data);
       if (result.annotated_image_base64) {
         setAnnotatedImageBase64(result.annotated_image_base64);
       }
+      if (result.original_image_base64) {
+        setOriginalImageBase64(result.original_image_base64);
+      }
       if (result.pdf_base64) {
         setPdfBase64(result.pdf_base64);
       }
+      if (result.placements) {
+        setPlacements(result.placements);
+      }
 
-      // 2. Automatically trigger primary download: Translated Overlay Image
+      // Automatically trigger PNG download
       if (result.annotated_image_base64) {
         const a = document.createElement("a");
         a.style.display = "none";
         a.href = result.annotated_image_base64;
-        a.download = `Translated_${selectedFile.name || "ID_Overlay.jpg"}`;
+        a.download = `Translated_${selectedFile.name.replace(/\.[^/.]+$/, "")}.png`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
       }
 
-      setSuccessMessage("Foreign ID translated! The English overlay image has been downloaded.");
+      setSuccessMessage("Foreign ID translated! Annotated PNG image with English overlays downloaded.");
     } catch (err: any) {
       setError(err.message || "Failed to translate foreign ID document.");
     } finally {
@@ -103,7 +116,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
     const a = document.createElement("a");
     a.style.display = "none";
     a.href = annotatedImageBase64;
-    a.download = `Translated_${selectedFile?.name || "ID_Overlay.jpg"}`;
+    a.download = `Translated_${selectedFile?.name.replace(/\.[^/.]+$/, "") || "ID"}.png`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -133,7 +146,9 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
     setSelectedFile(null);
     setTranslatedData(null);
     setAnnotatedImageBase64(null);
+    setOriginalImageBase64(null);
     setPdfBase64(null);
+    setPlacements([]);
     setError(null);
     setSuccessMessage(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -151,7 +166,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
             <div>
               <h3 className="font-bold text-lg text-white leading-tight">Foreign ID Translator</h3>
               <p className="text-xs text-indigo-200 mt-0.5">
-                Translates foreign ID text into English overlaid directly onto the document
+                High-Legibility English Overlays with Zero Photo Destruction
               </p>
             </div>
           </div>
@@ -246,17 +261,33 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
             /* Results View */
             <div className="space-y-4">
               <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-                <h4 className="font-semibold text-gray-800 text-sm flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                  Translated Document Image
-                </h4>
+                <div className="flex items-center gap-3">
+                  <h4 className="font-semibold text-gray-800 text-sm flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                    Document Preview
+                  </h4>
+                  {/* Show Overlays Toggle Switch */}
+                  <button
+                    type="button"
+                    onClick={() => setShowOverlay(!showOverlay)}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition-all border ${
+                      showOverlay
+                        ? "bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100"
+                        : "bg-gray-100 text-gray-600 border-gray-200 hover:bg-gray-200"
+                    }`}
+                  >
+                    {showOverlay ? <Eye className="w-3.5 h-3.5 text-indigo-600" /> : <EyeOff className="w-3.5 h-3.5 text-gray-500" />}
+                    <span>{showOverlay ? "Show Overlays: ON" : "Show Overlays: OFF"}</span>
+                  </button>
+                </div>
+
                 <div className="flex items-center gap-2">
                   <button
                     onClick={triggerImageDownloadAgain}
                     className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg shadow-sm transition-colors"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    Download Image
+                    Download PNG
                   </button>
                   {pdfBase64 && (
                     <button
@@ -271,39 +302,84 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
               </div>
 
               {/* Primary Image Output Preview */}
-              {annotatedImageBase64 ? (
-                <div className="bg-slate-900 rounded-2xl p-4 flex items-center justify-center overflow-hidden max-h-[380px] shadow-inner border border-slate-800">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={annotatedImageBase64}
-                    alt="Translated Foreign ID Overlay"
-                    className="max-h-[350px] w-auto object-contain rounded-lg shadow-lg border border-slate-700"
-                  />
-                </div>
-              ) : null}
+              <div className="relative bg-slate-900 rounded-2xl p-4 flex items-center justify-center overflow-hidden max-h-[380px] shadow-inner border border-slate-800">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={showOverlay && annotatedImageBase64 ? annotatedImageBase64 : (originalImageBase64 || annotatedImageBase64 || "")}
+                  alt="Translated Foreign ID Overlay"
+                  className="max-h-[350px] w-auto object-contain rounded-lg shadow-lg border border-slate-700"
+                />
 
-              {/* Extracted JSON Data Table */}
+                {/* Floating Tooltip when hovering over a placement item */}
+                {hoveredIndex !== null && placements[hoveredIndex] && (
+                  <div className="absolute top-6 left-6 z-20 bg-slate-950/90 text-white border border-slate-700 rounded-xl p-3 shadow-2xl backdrop-blur-md max-w-sm animate-in fade-in duration-150">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-purple-300 uppercase tracking-wider mb-1">
+                      <Info className="w-3.5 h-3.5" />
+                      Region #{placements[hoveredIndex].index} [{placements[hoveredIndex].mode.toUpperCase()}]
+                    </div>
+                    <p className="text-xs font-bold text-white">{placements[hoveredIndex].text}</p>
+                    <p className="text-[11px] text-slate-400 mt-1 font-mono">
+                      Font size: {placements[hoveredIndex].font_size}px • Bounds: {JSON.stringify(placements[hoveredIndex].bbox)}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Extracted JSON Data & Placements Table */}
               <div className="space-y-1.5">
-                <h5 className="font-semibold text-gray-700 text-xs uppercase tracking-wider">
-                  Extracted English Fields
-                </h5>
+                <div className="flex items-center justify-between">
+                  <h5 className="font-semibold text-gray-700 text-xs uppercase tracking-wider">
+                    Extracted English Fields & Overlay Placement Logs
+                  </h5>
+                  <span className="text-[11px] text-gray-400">Hover over row to inspect overlay region</span>
+                </div>
                 <div className="bg-gray-50 rounded-xl border border-gray-100 overflow-hidden max-h-44 overflow-y-auto">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-indigo-900 text-white font-semibold">
                       <tr>
                         <th className="px-4 py-2">Field Name</th>
-                        <th className="px-4 py-2">Translated Detail</th>
+                        <th className="px-4 py-2">English Translation</th>
+                        <th className="px-4 py-2 text-right">Placement Mode</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200/60">
-                      {Object.entries(translatedData).map(([key, val], idx) => (
-                        <tr key={idx} className={idx % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
-                          <td className="px-4 py-2 font-semibold text-gray-800 border-r border-gray-100">{key}</td>
-                          <td className="px-4 py-2 text-gray-700">
-                            {typeof val === "object" ? JSON.stringify(val) : String(val)}
-                          </td>
-                        </tr>
-                      ))}
+                      {Object.entries(translatedData).map(([key, val], idx) => {
+                        const placement = placements[idx];
+                        return (
+                          <tr
+                            key={idx}
+                            onMouseEnter={() => setHoveredIndex(idx)}
+                            onMouseLeave={() => setHoveredIndex(null)}
+                            className={`transition-colors ${
+                              hoveredIndex === idx
+                                ? "bg-indigo-50/80 font-medium"
+                                : idx % 2 === 0
+                                ? "bg-white"
+                                : "bg-gray-50/50"
+                            }`}
+                          >
+                            <td className="px-4 py-2 font-semibold text-gray-800 border-r border-gray-100">{key}</td>
+                            <td className="px-4 py-2 text-gray-700">
+                              {typeof val === "object" ? JSON.stringify(val) : String(val)}
+                            </td>
+                            <td className="px-4 py-2 text-right">
+                              {placement ? (
+                                <span
+                                  className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
+                                    placement.mode === "inline"
+                                      ? "bg-emerald-100 text-emerald-800"
+                                      : "bg-indigo-100 text-indigo-800"
+                                  }`}
+                                >
+                                  {placement.mode.toUpperCase()} ({placement.font_size}px)
+                                </span>
+                              ) : (
+                                <span className="text-gray-400 text-[10px]">AUTO</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

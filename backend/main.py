@@ -556,8 +556,8 @@ async def translate_foreign_id_endpoint(
 
             return Response(
                 content=img_bytes,
-                media_type="image/jpeg",
-                headers={"Content-Disposition": 'attachment; filename="Translated_ID_Overlay.jpg"'},
+                media_type="image/png",
+                headers={"Content-Disposition": 'attachment; filename="Translated_ID_Overlay.png"'},
             )
         except MissingApiKeyError as err:
             raise HTTPException(status_code=401, detail=str(err))

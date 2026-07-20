@@ -1,12 +1,25 @@
 import { getApiBase } from "./analyzeApi";
 
+export interface PlacementItem {
+  index: number;
+  mode: "inline" | "side_panel";
+  font_size: number;
+  bbox: [number, number, number, number];
+  text: string;
+}
+
 export interface TranslateIdJsonResponse {
   success: boolean;
   filename: string;
   annotated_image_base64?: string;
   raw_image_base64?: string;
+  original_image_base64?: string;
   translated_data: Record<string, any>;
   pdf_base64?: string;
+  extracted_regions?: any[];
+  bbox_count?: number;
+  drawn_count?: number;
+  placements?: PlacementItem[];
 }
 
 const TRANSLATE_MAX_ATTEMPTS = 3;
@@ -22,7 +35,7 @@ function isNetworkError(error: unknown): boolean {
 
 /**
  * Uploads a foreign ID document and returns the translated overlay image (primary output),
- * extracted English JSON fields, and optional PDF summary base64.
+ * original image, extracted English JSON fields, and placement logs.
  */
 export async function translateForeignIdJson(
   file: File,
