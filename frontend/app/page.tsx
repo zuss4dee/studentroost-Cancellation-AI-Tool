@@ -13,6 +13,7 @@ import {
   Globe,
   Info,
   Languages,
+  Layers,
   MessageCircle,
   Play,
   PlusSquare,
@@ -26,6 +27,7 @@ import { explainResult } from "../lib/explainResult";
 import type { PdfExtractionResult } from "../lib/pdfContentTypes";
 import { runUniversalContentChecks } from "../lib/universalChecks";
 import { ForeignIdTranslatorModal } from "../components/ForeignIdTranslatorModal";
+import { TranslatedIdOverlayModal } from "../components/TranslatedIdOverlayModal";
 
 
 const MAX_FILE_SIZE_MB = 200;
@@ -181,6 +183,7 @@ export default function Home() {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isTranslatorModalOpen, setIsTranslatorModalOpen] = useState(false);
+  const [isOverlayModalOpen, setIsOverlayModalOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastIdRef = useRef(0);
   const addToast = useCallback((message: string, type: ToastItem["type"] = "error") => {
@@ -655,6 +658,15 @@ export default function Home() {
               <Globe className="h-4 w-4" style={{ color: COLORS.purple }} />
               Foreign ID Translator
             </button>
+            <button
+              type="button"
+              onClick={() => setIsOverlayModalOpen(true)}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-[13px] font-medium transition hover:bg-purple-100/60"
+              style={{ color: COLORS.purple }}
+            >
+              <Layers className="h-4 w-4" style={{ color: COLORS.purple }} />
+              ID Text Overlay
+            </button>
           </nav>
         </div>
 
@@ -821,6 +833,14 @@ export default function Home() {
                   >
                     <Globe className="h-4 w-4 text-purple-300" />
                     Translate Foreign ID
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsOverlayModalOpen(true)}
+                    className="inline-flex items-center gap-2 rounded-full bg-purple-900/90 text-white px-5 py-2.5 text-[13px] font-semibold shadow-md transition hover:bg-purple-950 border border-white/20"
+                  >
+                    <Layers className="h-4 w-4 text-purple-300" />
+                    ID Text Overlay
                   </button>
                   <button
                     type="button"
@@ -2072,6 +2092,10 @@ export default function Home() {
       <ForeignIdTranslatorModal
         isOpen={isTranslatorModalOpen}
         onClose={() => setIsTranslatorModalOpen(false)}
+      />
+      <TranslatedIdOverlayModal
+        isOpen={isOverlayModalOpen}
+        onClose={() => setIsOverlayModalOpen(false)}
       />
     </div>
   );

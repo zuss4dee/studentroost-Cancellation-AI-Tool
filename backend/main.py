@@ -39,6 +39,7 @@ try:
         JsonParsingError,
     )
     from .src.report_generator import generate_translated_id_pdf
+    from .src.translated_id_overlay import process_translated_id_overlay
 except ImportError:
     from src.foreign_id_translator import (
         translate_foreign_id,
@@ -50,6 +51,7 @@ except ImportError:
         JsonParsingError,
     )
     from src.report_generator import generate_translated_id_pdf
+    from src.translated_id_overlay import process_translated_id_overlay
 
 
 
@@ -633,9 +635,81 @@ async def translate_foreign_id_json_endpoint(
         }
     except HTTPException:
         raise
+@app.post("/api/translated-id-overlay")
+async def translated_id_overlay_endpoint(
+    file: UploadFile = File(...),
+):
+    """
+    Receives an uploaded foreign ID (image or PDF), detects foreign text regions,
+    translates text to English, and overlays clean English text boxes onto the image.
+    Returns JSON containing the base64 annotated image and extracted regions.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+
+    try:
+        file_bytes = await file.read()
+        if len(file_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
+            )
+
+        try:
+            result = await run_in_threadpool(process_translated_id_overlay, file_bytes, file.filename)
+            return result
+        except MissingApiKeyError as err:
+            raise HTTPException(status_code=401, detail=str(err))
+        except InvalidApiKeyError as err:
+            raise HTTPException(status_code=403, detail=str(err))
+        except InvalidModelError as err:
+            raise HTTPException(status_code=404, detail=str(err))
+        except ValueError as val_err:
+            raise HTTPException(status_code=400, detail=str(val_err))
+        except Exception as exc:
+            logging.exception("Overlay processing failed: %s", exc)
+            raise HTTPException(status_code=500, detail=f"Overlay processing failed: {exc}")
+    except HTTPException:
+        raise
     except Exception as exc:
-        logging.exception("Translation failed: %s", exc)
-        raise HTTPException(status_code=500, detail=f"Translation failed: {exc}") from exc
+        logging.exception("Request failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Request failed: {exc}") from exc
+
+
+@app.post("/api/translated-id-overlay/image")
+async def translated_id_overlay_image_endpoint(
+    file: UploadFile = File(...),
+):
+    """
+    Receives an uploaded foreign ID, processes the English text overlay,
+    and returns the annotated image file directly as a downloadable attachment.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+
+    try:
+        file_bytes = await file.read()
+        if len(file_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
+            )
+
+        result = await run_in_threadpool(process_translated_id_overlay, file_bytes, file.filename)
+        raw_b64 = result.get("raw_image_base64") or ""
+        img_bytes = base64.b64decode(raw_b64)
+
+        return Response(
+            content=img_bytes,
+            media_type="image/jpeg",
+            headers={"Content-Disposition": 'attachment; filename="Translated_ID_Overlay.jpg"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.exception("Request failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Request failed: {exc}") from exc
+
 
 
 

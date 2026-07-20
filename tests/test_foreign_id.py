@@ -34,3 +34,20 @@ def test_generate_translated_id_pdf():
     assert len(pdf_bytes) > 0
     # Check PDF header bytes %PDF-
     assert pdf_bytes.startswith(b"%PDF-")
+
+
+def test_render_overlay_image():
+    from PIL import Image
+    from backend.src.translated_id_overlay import render_overlay_image
+
+    img = Image.new("RGB", (800, 600), color=(240, 240, 240))
+    sample_boxes = [
+        {
+            "box_2d": [100, 200, 200, 600],
+            "original_text": "APELLIDO",
+            "translated_text": "Surname: GARCIA",
+        }
+    ]
+    annotated = render_overlay_image(img, sample_boxes)
+    assert annotated.size == (800, 600)
+
