@@ -7,7 +7,6 @@ from typing import Any, Dict
 
 import fitz  # PyMuPDF
 from PIL import Image
-import google.generativeai as genai
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +72,7 @@ def clean_json_response(raw_text: str) -> str:
 
 def translate_foreign_id(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
-    Analyzes an uploaded foreign ID (image or PDF) using gemini-1.5-flash,
+    Analyzes an uploaded foreign ID (image or PDF) using Google Gemini Flash vision,
     extracts details, translates to English, and returns a Python dictionary.
     """
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
@@ -82,33 +81,58 @@ def translate_foreign_id(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             "GEMINI_API_KEY is not configured in backend environment. Please set GEMINI_API_KEY in backend/.env or Render dashboard."
         )
 
-    # 1. Convert uploaded file to PIL Image and constrain size for speed
     image = load_image_from_bytes(file_bytes, filename)
-
-    # 2. Configure Gemini API
-    genai.configure(api_key=api_key)
-
-    # 3. Try primary model and fallback model if needed
-    models_to_try = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-1.5-pro"]
-    last_error = None
+    models_to_try = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
     response_text = ""
+    last_error = None
 
-    for model_name in models_to_try:
+    # 1. Try new google-genai SDK first
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+        for model_name in models_to_try:
+            try:
+                logger.info(f"Calling google-genai SDK with model: {model_name}")
+                res = client.models.generate_content(
+                    model=model_name,
+                    contents=[image, PROMPT_TEXT],
+                )
+                if res and res.text:
+                    response_text = res.text
+                    break
+            except Exception as exc:
+                logger.warning(f"google-genai model {model_name} failed: {exc}")
+                last_error = exc
+    except Exception as exc:
+        logger.info(f"google-genai SDK attempt skipped: {exc}")
+
+    # 2. Fall back to legacy google.generativeai SDK if needed
+    if not response_text:
         try:
-            logger.info(f"Attempting translation with model: {model_name}")
-            model = genai.GenerativeModel(model_name)
-            response = model.generate_content([image, PROMPT_TEXT])
-            if response and response.text:
-                response_text = response.text
-                break
+            import google.generativeai as legacy_genai
+            legacy_genai.configure(api_key=api_key)
+            os.environ["GOOGLE_API_KEY"] = api_key
+            for model_name in models_to_try:
+                try:
+                    logger.info(f"Calling google.generativeai SDK with model: {model_name}")
+                    model = legacy_genai.GenerativeModel(model_name)
+                    res = model.generate_content([image, PROMPT_TEXT])
+                    if res and res.text:
+                        response_text = res.text
+                        break
+                except Exception as exc:
+                    logger.warning(f"google.generativeai model {model_name} failed: {exc}")
+                    last_error = exc
         except Exception as exc:
-            logger.warning(f"Gemini model {model_name} failed: {exc}")
+            logger.error(f"Legacy google.generativeai failed: {exc}")
             last_error = exc
 
     if not response_text:
-        raise RuntimeError(f"Gemini API request failed across all models: {last_error}")
+        raise RuntimeError(
+            f"Gemini API request failed across all models ({', '.join(models_to_try)}): {last_error}"
+        )
 
-    # 4. Clean and parse JSON response
+    # 3. Clean and parse JSON response
     cleaned = clean_json_response(response_text)
     try:
         translated_data = json.loads(cleaned)
@@ -116,5 +140,5 @@ def translate_foreign_id(file_bytes: bytes, filename: str) -> Dict[str, Any]:
             raise ValueError("Gemini response did not return a dictionary object.")
         return translated_data
     except Exception as exc:
-        logger.error(f"Failed to parse Gemini JSON: {response_text[:300]}")
+        logger.error(f"Failed to parse Gemini JSON output: {response_text[:300]}")
         raise ValueError(f"Gemini failed to return valid JSON. Response output: {response_text[:200]}") from exc
