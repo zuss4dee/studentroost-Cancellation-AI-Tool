@@ -43,8 +43,26 @@ OVERLAY_PROMPT = (
 )
 
 
+def get_bold_font(size: int) -> ImageFont.FreeTypeFont:
+    """Attempts to load a bold sans-serif TTF font at the given point size."""
+    font_paths = [
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/SFNS.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "arialbd.ttf",
+        "arial.ttf",
+    ]
+    for fp in font_paths:
+        try:
+            return ImageFont.truetype(fp, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
 def image_to_base64_png(image: Image.Image) -> str:
-    """Convert PIL image to base64 PNG string (supports RGBA alpha channels)."""
+    """Convert PIL image to base64 PNG string."""
     buf = BytesIO()
     image.save(buf, format="PNG", optimize=True)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -134,13 +152,13 @@ def resolve_box_coordinates(
 
 def detect_face_photo_region(img_w: int, img_h: int) -> Tuple[int, int, int, int]:
     """
-    Returns the bounding box of the face photo area on standard ID documents.
-    Typically face photo occupies left 35% of the card: [x1=0, y1=0.1*h, x2=0.38*w, y2=0.9*h].
+    Returns the bounding box of the protected face photo region.
+    Typically occupies left 38% of card: [x1=0, y1=0.08*h, x2=0.38*w, y2=0.92*h].
     """
-    return (0, int(0.10 * img_h), int(0.38 * img_w), int(0.90 * img_h))
+    return (0, int(0.08 * img_h), int(0.38 * img_w), int(0.92 * img_h))
 
 
-def box_intersects(b1: Tuple[int, int, int, int], b2: Tuple[int, int, int, int]) -> bool:
+def boxes_overlap(b1: Tuple[int, int, int, int], b2: Tuple[int, int, int, int]) -> bool:
     """Checks if bounding box b1 intersects bounding box b2."""
     x1, y1, x2, y2 = b1
     fx1, fy1, fx2, fy2 = b2
@@ -157,7 +175,7 @@ def generate_fallback_layout_boxes(
         return []
 
     start_y = 120
-    row_h = min(70, int(700 / max(1, len(keys))))
+    row_h = min(75, int(700 / max(1, len(keys))))
 
     for i, k in enumerate(keys):
         val = str(translated_data[k])
@@ -172,13 +190,13 @@ def generate_fallback_layout_boxes(
     return items
 
 
-def wrap_text_lines(
+def wrap_text_to_lines(
     draw: ImageDraw.ImageDraw,
     text: str,
-    font: ImageFont.ImageFont,
+    font: ImageFont.FreeTypeFont,
     max_w: int,
 ) -> List[str]:
-    """Wraps text into lines fitting within max_w pixels."""
+    """Wraps text into lines fitting within max_w pixels using textbbox."""
     words = text.split()
     if not words:
         return [text]
@@ -188,11 +206,8 @@ def wrap_text_lines(
 
     for w in words[1:]:
         test = f"{cur} {w}"
-        try:
-            bbox = draw.textbbox((0, 0), test, font=font)
-            line_w = bbox[2] - bbox[0]
-        except AttributeError:
-            line_w, _ = draw.textsize(test, font=font)
+        bbox = draw.textbbox((0, 0), test, font=font)
+        line_w = bbox[2] - bbox[0]
 
         if line_w <= max_w:
             cur = test
@@ -204,34 +219,183 @@ def wrap_text_lines(
     return lines
 
 
+def calculate_label_dimensions(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    max_allowed_w: int,
+    max_lines: int = 2,
+) -> Tuple[int, int, int, List[str], ImageFont.FreeTypeFont]:
+    """
+    Sizes font from 22px down to 15px minimum to fit within max_allowed_w.
+    Returns (label_w, label_h, font_size, wrapped_lines, font).
+    """
+    pad_x, pad_y = 8, 5
+
+    for font_size in range(22, 14, -1):
+        font = get_bold_font(font_size)
+        lines = wrap_text_to_lines(draw, text, font, max_allowed_w - (pad_x * 2))
+
+        if len(lines) <= max_lines:
+            # Calculate total width and height
+            max_line_w = 0
+            total_text_h = 0
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                lw = bbox[2] - bbox[0]
+                lh = bbox[3] - bbox[1]
+                max_line_w = max(max_line_w, lw)
+                total_text_h += lh + 3
+
+            label_w = max_line_w + (pad_x * 2)
+            label_h = total_text_h + (pad_y * 2)
+            return label_w, label_h, font_size, lines, font
+
+    # Fallback to 15px font
+    font = get_bold_font(15)
+    lines = wrap_text_to_lines(draw, text, font, max_allowed_w - (pad_x * 2))[:max_lines]
+    max_line_w = 0
+    total_text_h = 0
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lw = bbox[2] - bbox[0]
+        lh = bbox[3] - bbox[1]
+        max_line_w = max(max_line_w, lw)
+        total_text_h += lh + 3
+
+    label_w = max_line_w + (pad_x * 2)
+    label_h = total_text_h + (pad_y * 2)
+    return label_w, label_h, 15, lines, font
+
+
+def render_translation_label(
+    draw_overlay: ImageDraw.ImageDraw,
+    anchor_bbox: Tuple[int, int, int, int],
+    translated_text: str,
+    img_w: int,
+    img_h: int,
+    photo_region: Tuple[int, int, int, int],
+    placed_label_bboxes: List[Tuple[int, int, int, int]],
+    side_panel_tracker: List[int],
+) -> Tuple[str, Tuple[int, int, int, int], int, int]:
+    """
+    Renders a compact translation label positioned ABOVE, BELOW, or SIDE_PANEL.
+    Returns (placement_mode, label_bbox, font_size, line_count).
+    """
+    ax1, ay1, ax2, ay2 = anchor_bbox
+    max_allowed_w = min(int(img_w * 0.35), 320)  # Max 35% image width (NEVER long full-width bars)
+
+    # Determine max lines (Address gets 3, short fields get 2)
+    is_address = any(word in translated_text.lower() for word in ["address", "residence", "street", "road", "district"])
+    max_lines = 3 if is_address else 2
+
+    # Measure label dimensions
+    label_w, label_h, font_size, lines, font = calculate_label_dimensions(
+        draw_overlay, translated_text, max_allowed_w, max_lines
+    )
+
+    # Colors: 85% opacity white background box, 2px dark navy border, solid dark navy text
+    BG_WHITE_85 = (255, 255, 255, 218)  # 85% opacity white
+    BORDER_NAVY = (11, 31, 58, 255)  # 2px dark navy border (#0B1F3A)
+    TEXT_NAVY = (11, 31, 58, 255)  # Solid dark navy text (#0B1F3A)
+    LINE_INDIGO = (79, 70, 229, 240)  # 2px connector line (#4F46E5)
+
+    placement_mode = ""
+    lx1, ly1, lx2, ly2 = 0, 0, 0, 0
+
+    # --- PLACEMENT CHOICE A: ABOVE ---
+    cand_y1 = ay1 - label_h - 6
+    cand_y2 = cand_y1 + label_h
+    cand_x1 = ax1
+    cand_x2 = cand_x1 + label_w
+    cand_box = (cand_x1, cand_y1, cand_x2, cand_y2)
+
+    if (
+        cand_y1 >= 5
+        and cand_x2 <= img_w - 5
+        and not boxes_overlap(cand_box, photo_region)
+        and not any(boxes_overlap(cand_box, prev) for prev in placed_label_bboxes)
+    ):
+        placement_mode = "above"
+        lx1, ly1, lx2, ly2 = cand_box
+
+    # --- PLACEMENT CHOICE B: BELOW ---
+    if not placement_mode:
+        cand_y1 = ay2 + 6
+        cand_y2 = cand_y1 + label_h
+        cand_x1 = ax1
+        cand_x2 = cand_x1 + label_w
+        cand_box = (cand_x1, cand_y1, cand_x2, cand_y2)
+
+        if (
+            cand_y2 <= img_h - 5
+            and cand_x2 <= img_w - 5
+            and not boxes_overlap(cand_box, photo_region)
+            and not any(boxes_overlap(cand_box, prev) for prev in placed_label_bboxes)
+        ):
+            placement_mode = "below"
+            lx1, ly1, lx2, ly2 = cand_box
+
+    # --- PLACEMENT CHOICE C: SIDE_PANEL WITH CONNECTOR LINE ---
+    if not placement_mode:
+        placement_mode = "side_panel"
+        cur_side_y = side_panel_tracker[0]
+
+        lx1 = max(10, img_w - label_w - 15)
+        ly1 = min(img_h - label_h - 10, cur_side_y)
+        lx2 = lx1 + label_w
+        ly2 = ly1 + label_h
+        side_panel_tracker[0] = ly2 + 10
+
+        # Draw 2px connector line from original text center to side label
+        acx = (ax1 + ax2) // 2
+        acy = (ay1 + ay2) // 2
+        draw_overlay.line([(acx, acy), (lx1, ly1 + (label_h // 2))], fill=LINE_INDIGO, width=2)
+        draw_overlay.ellipse([acx - 3, acy - 3, acx + 3, acy + 3], fill=LINE_INDIGO)
+
+    label_box = (lx1, ly1, lx2, ly2)
+    placed_label_bboxes.append(label_box)
+
+    # 1. Draw 85% white rounded background box with 2px dark navy border
+    draw_overlay.rounded_rectangle(
+        [lx1, ly1, lx2, ly2],
+        radius=4,
+        fill=BG_WHITE_85,
+        outline=BORDER_NAVY,
+        width=2,
+    )
+
+    # 2. Render solid dark navy bold English text
+    text_y = ly1 + 5
+    for line in lines:
+        draw_overlay.text((lx1 + 8, text_y), line, fill=TEXT_NAVY, font=font)
+        bbox = draw_overlay.textbbox((0, 0), line, font=font)
+        lh = bbox[3] - bbox[1]
+        text_y += lh + 3
+
+    return placement_mode, label_box, font_size, len(lines)
+
+
 def render_overlay_image(
     image: Image.Image, text_boxes: List[Dict[str, Any]]
 ) -> Tuple[Image.Image, int, List[Dict[str, Any]]]:
     """
-    Renders high-legibility English text overlays onto document image using PIL RGBA layers.
-    - Inline overlay: 60-70% opacity white rounded box, bold navy text, scaled & wrapped to fit.
-    - Side-panel overlay + connector line: For cramped boxes or regions intersecting face photo.
-    - Zero destruction: Face photo & non-text elements remain 100% untouched.
-
-    Returns (annotated_png_image, drawn_count, placement_logs).
+    Renders compact English translation labels placed above, below, or side-panel.
+    - Compact label boxes sized to English text (Max 35% image width).
+    - Photo protection: Face area is NEVER covered.
+    - High legibility: Solid dark navy text, 85% white background, 15px-22px bold font.
+    - Returns (annotated_image, count_drawn, placement_logs).
     """
     base = image.convert("RGBA") if image.mode != "RGBA" else image.copy()
     overlay_layer = Image.new("RGBA", base.size, (255, 255, 255, 0))
     draw_overlay = ImageDraw.Draw(overlay_layer)
-    draw_base = ImageDraw.Draw(base)
 
     img_w, img_h = base.size
-    face_region = detect_face_photo_region(img_w, img_h)
-
-    # Color palette
-    WHITE_SEMI = (255, 255, 255, 175)  # 68% opacity white background
-    NAVY_TEXT = (15, 23, 42, 255)  # High contrast bold navy (#0F172A)
-    BORDER_COLOR = (71, 85, 105, 200)  # Slate border (#475569)
-    LINE_COLOR = (79, 70, 229, 230)  # Indigo connector line (#4F46E5)
+    photo_region = detect_face_photo_region(img_w, img_h)
 
     drawn_count = 0
     placements_log: List[Dict[str, Any]] = []
-    side_panel_y = 60  # Vertical tracker for side-panel boxes
+    placed_label_bboxes: List[Tuple[int, int, int, int]] = []
+    side_panel_tracker = [60]
 
     for idx, item in enumerate(text_boxes):
         translated_text = str(item.get("translated_text") or item.get("translation") or "").strip()
@@ -242,103 +406,43 @@ def render_overlay_image(
         if not coords:
             continue
 
-        x1, y1, x2, y2 = coords
-        box_w = x2 - x1
-        box_h = y2 - y1
-
-        # Check if region intersects face photo or is cramped (<22px height or <60px width)
-        intersects_photo = box_intersects((x1, y1, x2, y2), face_region)
-        is_cramped = box_h < 22 or box_w < 60
-
-        # Determine Font Size
-        font_size = max(10, min(18, int(box_h * 0.55)))
-        try:
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except Exception:
-            font = ImageFont.load_default()
-
-        if not intersects_photo and not is_cramped:
-            # --- MODE 1: INLINE OVERLAY (60% Semi-transparent white box) ---
-            mode = "inline"
-            draw_overlay.rounded_rectangle(
-                [x1, y1, x2, y2],
-                radius=5,
-                fill=WHITE_SEMI,
-                outline=BORDER_COLOR,
-                width=1,
-            )
-
-            lines = wrap_text_lines(draw_overlay, translated_text, font, max(20, box_w - 6))
-            text_y = y1 + 3
-            for line in lines[:3]:
-                if text_y + font_size > y2:
-                    break
-                draw_overlay.text((x1 + 4, text_y), line, fill=NAVY_TEXT, font=font)
-                text_y += font_size + 2
-
-        else:
-            # --- MODE 2: SIDE-PANEL OVERLAY WITH CONNECTOR LINE ---
-            mode = "side_panel"
-
-            # Position side-panel box in open margin (e.g. right sidebar or top/bottom)
-            panel_w = max(160, int(img_w * 0.32))
-            panel_h = max(34, font_size * 2 + 10)
-            panel_x1 = max(10, img_w - panel_w - 15)
-            panel_y1 = min(img_h - panel_h - 10, side_panel_y)
-            panel_x2 = panel_x1 + panel_w
-            panel_y2 = panel_y1 + panel_h
-            side_panel_y = panel_y2 + 12
-
-            # 1. Draw connector line from text bbox center to side-panel
-            center_x = (x1 + x2) // 2
-            center_y = (y1 + y2) // 2
-            draw_overlay.line(
-                [(center_x, center_y), (panel_x1, panel_y1 + (panel_h // 2))],
-                fill=LINE_COLOR,
-                width=2,
-            )
-            # Draw small indicator dot at source text box
-            draw_overlay.ellipse(
-                [center_x - 3, center_y - 3, center_x + 3, center_y + 3],
-                fill=LINE_COLOR,
-            )
-
-            # 2. Draw side-panel box
-            draw_overlay.rounded_rectangle(
-                [panel_x1, panel_y1, panel_x2, panel_y2],
-                radius=6,
-                fill=WHITE_SEMI,
-                outline=BORDER_COLOR,
-                width=2,
-            )
-
-            lines = wrap_text_lines(draw_overlay, translated_text, font, panel_w - 10)
-            text_y = panel_y1 + 4
-            for line in lines[:3]:
-                if text_y + font_size > panel_y2:
-                    break
-                draw_overlay.text((panel_x1 + 6, text_y), line, fill=NAVY_TEXT, font=font)
-                text_y += font_size + 2
+        placement_mode, label_box, font_size, line_count = render_translation_label(
+            draw_overlay=draw_overlay,
+            anchor_bbox=coords,
+            translated_text=translated_text,
+            img_w=img_w,
+            img_h=img_h,
+            photo_region=photo_region,
+            placed_label_bboxes=placed_label_bboxes,
+            side_panel_tracker=side_panel_tracker,
+        )
 
         drawn_count += 1
         placements_log.append({
             "index": idx + 1,
-            "mode": mode,
+            "mode": placement_mode,
             "font_size": font_size,
-            "bbox": [x1, y1, x2, y2],
+            "lines": line_count,
+            "orig_bbox": coords,
+            "label_bbox": label_box,
             "text": translated_text,
         })
 
-        logger.info(
-            f"[OVERLAY_RENDERER] Region #{idx + 1} [{mode.upper()}] (font_size={font_size}px, bbox=[{x1},{y1},{x2},{y2}]): '{translated_text[:35]}'"
+        log_msg = (
+            f"[OVERLAY_RENDERER] Label #{idx+1} | placement={placement_mode.upper()} | "
+            f"orig_bbox={coords} | label_bbox={label_box} | font_size={font_size}px | "
+            f"lines={line_count} | text='{translated_text[:35]}'"
         )
+        logger.info(log_msg)
+        print(log_msg)
 
-    # Composite alpha overlay layer onto base image
+    # Composite overlay layer onto base image
     final_image = Image.alpha_composite(base, overlay_layer).convert("RGB")
 
     msg_summary = (
         f"[OVERLAY_RENDERER] Completed overlay rendering: bbox_count={len(text_boxes)}, "
-        f"drawn_count={drawn_count}, inline_count={sum(1 for p in placements_log if p['mode']=='inline')}, "
+        f"drawn_count={drawn_count}, above_count={sum(1 for p in placements_log if p['mode']=='above')}, "
+        f"below_count={sum(1 for p in placements_log if p['mode']=='below')}, "
         f"side_panel_count={sum(1 for p in placements_log if p['mode']=='side_panel')}"
     )
     logger.info(msg_summary)
@@ -350,8 +454,7 @@ def render_overlay_image(
 def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Performs OCR & bounding box extraction via Gemini Flash, translates text to English,
-    and overlays English translation boxes onto the original document image using PIL RGBA layers.
-    Saves annotated PNG image as main response.
+    and overlays compact English translation labels onto the original document image.
     """
     api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if not api_key or api_key.startswith("your-") or len(api_key) < 10:
