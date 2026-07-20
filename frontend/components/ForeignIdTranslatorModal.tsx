@@ -17,6 +17,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
   const [translatedData, setTranslatedData] = useState<Record<string, any> | null>(null);
   const [pdfBase64, setPdfBase64] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [loadingStatus, setLoadingStatus] = useState<string>("Extracting & translating ID...");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -52,8 +53,6 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
       setSuccessMessage(null);
     }
   };
-
-  const [loadingStatus, setLoadingStatus] = useState<string>("Extracting & translating ID...");
 
   const handleTranslateAndDownload = async () => {
     if (!selectedFile) {
