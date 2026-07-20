@@ -10,7 +10,9 @@ import {
   FileStack,
   FileText,
   FolderOpen,
+  Globe,
   Info,
+  Languages,
   MessageCircle,
   Play,
   PlusSquare,
@@ -23,6 +25,8 @@ import { supabase } from "../lib/supabaseClient";
 import { explainResult } from "../lib/explainResult";
 import type { PdfExtractionResult } from "../lib/pdfContentTypes";
 import { runUniversalContentChecks } from "../lib/universalChecks";
+import { ForeignIdTranslatorModal } from "../components/ForeignIdTranslatorModal";
+
 
 const MAX_FILE_SIZE_MB = 200;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
@@ -176,6 +180,7 @@ export default function Home() {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isTranslatorModalOpen, setIsTranslatorModalOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastIdRef = useRef(0);
   const addToast = useCallback((message: string, type: ToastItem["type"] = "error") => {
@@ -641,6 +646,15 @@ export default function Home() {
               <FolderOpen className="h-4 w-4" style={{ color: COLORS.textSecondary }} />
               Case History
             </a>
+            <button
+              type="button"
+              onClick={() => setIsTranslatorModalOpen(true)}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-[13px] font-medium transition hover:bg-purple-100/60"
+              style={{ color: COLORS.purple }}
+            >
+              <Globe className="h-4 w-4" style={{ color: COLORS.purple }} />
+              Foreign ID Translator
+            </button>
           </nav>
         </div>
 
@@ -799,6 +813,14 @@ export default function Home() {
                   >
                     <CloudUpload className="h-4 w-4" />
                     Start New Scan
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsTranslatorModalOpen(true)}
+                    className="inline-flex items-center gap-2 rounded-full bg-indigo-900/90 text-white px-5 py-2.5 text-[13px] font-semibold shadow-md transition hover:bg-indigo-950 border border-white/20"
+                  >
+                    <Globe className="h-4 w-4 text-purple-300" />
+                    Translate Foreign ID
                   </button>
                   <button
                     type="button"
@@ -2047,6 +2069,10 @@ export default function Home() {
           </div>
         </div>
       )}
+      <ForeignIdTranslatorModal
+        isOpen={isTranslatorModalOpen}
+        onClose={() => setIsTranslatorModalOpen(false)}
+      />
     </div>
   );
 }

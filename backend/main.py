@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 import fitz  # PyMuPDF
 from supabase import create_client, Client
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
@@ -26,6 +26,14 @@ from .src.detectors.confidence_scorer import ConfidenceScorer
 from .src.detectors.ai_content_detector import AIContentDetector
 from .src.detectors.universal_content_checks import run_universal_content_checks
 from .src.policy_engine import PolicyEngine
+
+try:
+    from .src.foreign_id_translator import translate_foreign_id
+    from .src.report_generator import generate_translated_id_pdf
+except ImportError:
+    from src.foreign_id_translator import translate_foreign_id
+    from src.report_generator import generate_translated_id_pdf
+
 
 
 app = FastAPI(title="Document Forensics API", version="1.0.0")
@@ -490,4 +498,87 @@ async def analyze_document(file: UploadFile = File(...), doc_type_key: str = For
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+
+
+@app.post("/api/translate-foreign-id")
+async def translate_foreign_id_endpoint(
+    file: UploadFile = File(...),
+):
+    """
+    Receives an uploaded foreign ID (image or PDF), calls Gemini 1.5 Flash to extract & translate details,
+    generates a ReportLab PDF summary, and returns the PDF file as a downloadable attachment.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+
+    try:
+        file_bytes = await file.read()
+        if len(file_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
+            )
+
+        # 1. Translate Foreign ID via Gemini 1.5 Flash
+        try:
+            translated_data = translate_foreign_id(file_bytes, file.filename)
+        except ValueError as val_err:
+            raise HTTPException(status_code=400, detail=str(val_err))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Translation failed: {exc}")
+
+        # 2. Generate PDF Summary via ReportLab
+        try:
+            pdf_buffer = generate_translated_id_pdf(translated_data, file.filename)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
+
+        # 3. Return downloadable PDF file
+        pdf_bytes = pdf_buffer.getvalue()
+        filename_out = "Translated_ID_Summary.pdf"
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename_out}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Request failed: {exc}") from exc
+
+
+@app.post("/api/translate-foreign-id-json")
+async def translate_foreign_id_json_endpoint(
+    file: UploadFile = File(...),
+):
+    """
+    Receives an uploaded foreign ID, extracts & translates fields using Gemini 1.5 Flash,
+    and returns both raw translated JSON and a base64 encoded PDF string.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+
+    try:
+        file_bytes = await file.read()
+        if len(file_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
+            )
+
+        translated_data = translate_foreign_id(file_bytes, file.filename)
+        pdf_buffer = generate_translated_id_pdf(translated_data, file.filename)
+        pdf_b64 = base64.b64encode(pdf_buffer.getvalue()).decode("utf-8")
+
+        return {
+            "success": True,
+            "filename": file.filename,
+            "translated_data": translated_data,
+            "pdf_base64": pdf_b64,
+        }
+    except ValueError as val_err:
+        raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Translation failed: {exc}") from exc
 
