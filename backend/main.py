@@ -534,8 +534,9 @@ async def translate_foreign_id_endpoint(
     file: UploadFile = File(...),
 ):
     """
-    Receives an uploaded foreign ID (image or PDF), calls Gemini Flash vision to extract & translate details,
-    generates a ReportLab PDF summary, and returns the PDF file as a downloadable attachment.
+    Receives an uploaded foreign ID (image or PDF), extracts & translates foreign text regions,
+    overlays English text boxes onto the document image while preserving layout, photos, and background,
+    and returns the annotated image file directly as the primary response.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded.")
@@ -548,41 +549,27 @@ async def translate_foreign_id_endpoint(
                 detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
             )
 
-        # 1. Translate Foreign ID via Gemini Flash
         try:
-            translated_data = await run_in_threadpool(translate_foreign_id, file_bytes, file.filename)
+            overlay_res = await run_in_threadpool(process_translated_id_overlay, file_bytes, file.filename)
+            raw_b64 = overlay_res.get("raw_image_base64") or ""
+            img_bytes = base64.b64decode(raw_b64)
+
+            return Response(
+                content=img_bytes,
+                media_type="image/jpeg",
+                headers={"Content-Disposition": 'attachment; filename="Translated_ID_Overlay.jpg"'},
+            )
         except MissingApiKeyError as err:
             raise HTTPException(status_code=401, detail=str(err))
         except InvalidApiKeyError as err:
             raise HTTPException(status_code=403, detail=str(err))
         except InvalidModelError as err:
             raise HTTPException(status_code=404, detail=str(err))
-        except JsonParsingError as err:
-            raise HTTPException(status_code=422, detail=str(err))
-        except GeminiApiFailureError as err:
-            raise HTTPException(status_code=502, detail=str(err))
         except ValueError as val_err:
             raise HTTPException(status_code=400, detail=str(val_err))
         except Exception as exc:
-            logging.exception("Translation failed: %s", exc)
-            raise HTTPException(status_code=500, detail=f"Translation failed: {exc}")
-
-        # 2. Generate PDF Summary via ReportLab
-        try:
-            pdf_buffer = await run_in_threadpool(generate_translated_id_pdf, translated_data, file.filename)
-        except Exception as exc:
-            logging.exception("PDF generation failed: %s", exc)
-            raise HTTPException(status_code=500, detail=f"PDF generation failed: {exc}")
-
-        # 3. Return downloadable PDF file
-        pdf_bytes = pdf_buffer.getvalue()
-        filename_out = "Translated_ID_Summary.pdf"
-
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{filename_out}"'},
-        )
+            logging.exception("Translation overlay failed: %s", exc)
+            raise HTTPException(status_code=500, detail=f"Translation overlay failed: {exc}")
     except HTTPException:
         raise
     except Exception as exc:
@@ -595,8 +582,9 @@ async def translate_foreign_id_json_endpoint(
     file: UploadFile = File(...),
 ):
     """
-    Receives an uploaded foreign ID, extracts & translates fields using Gemini Flash vision,
-    and returns both raw translated JSON and a base64 encoded PDF string.
+    Receives an uploaded foreign ID, extracts & translates text using Gemini Flash vision,
+    overlays English text boxes onto the document image, and returns the annotated image base64,
+    extracted JSON, and optional PDF summary base64.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded.")
@@ -609,8 +597,9 @@ async def translate_foreign_id_json_endpoint(
                 detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
             )
 
+        # 1. Generate primary output: Translated ID Overlay Image & Extracted Regions
         try:
-            translated_data = await run_in_threadpool(translate_foreign_id, file_bytes, file.filename)
+            overlay_res = await run_in_threadpool(process_translated_id_overlay, file_bytes, file.filename)
         except MissingApiKeyError as err:
             raise HTTPException(status_code=401, detail=str(err))
         except InvalidApiKeyError as err:
@@ -624,17 +613,64 @@ async def translate_foreign_id_json_endpoint(
         except ValueError as val_err:
             raise HTTPException(status_code=400, detail=str(val_err))
 
-        pdf_buffer = await run_in_threadpool(generate_translated_id_pdf, translated_data, file.filename)
-        pdf_b64 = base64.b64encode(pdf_buffer.getvalue()).decode("utf-8")
+        # 2. Extract key-value JSON summary
+        try:
+            translated_data = await run_in_threadpool(translate_foreign_id, file_bytes, file.filename)
+        except Exception as exc:
+            logging.warning("Secondary JSON translation fallback: %s", exc)
+            translated_data = {
+                reg.get("original_text", f"Field_{i}"): reg.get("translated_text", "")
+                for i, reg in enumerate(overlay_res.get("extracted_regions", []), 1)
+            }
+
+        # 3. Generate optional ReportLab PDF summary
+        pdf_b64 = ""
+        try:
+            pdf_buffer = await run_in_threadpool(generate_translated_id_pdf, translated_data, file.filename)
+            pdf_b64 = base64.b64encode(pdf_buffer.getvalue()).decode("utf-8")
+        except Exception as exc:
+            logging.warning("Optional PDF summary generation skipped: %s", exc)
 
         return {
             "success": True,
             "filename": file.filename,
+            "annotated_image_base64": overlay_res.get("annotated_image_base64"),
+            "raw_image_base64": overlay_res.get("raw_image_base64"),
             "translated_data": translated_data,
             "pdf_base64": pdf_b64,
         }
     except HTTPException:
         raise
+    except Exception as exc:
+        logging.exception("Translation failed: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Translation failed: {exc}") from exc
+
+
+@app.post("/api/translate-foreign-id/pdf")
+async def translate_foreign_id_pdf_endpoint(
+    file: UploadFile = File(...),
+):
+    """
+    Optional secondary endpoint to download ReportLab PDF summary.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+
+    try:
+        file_bytes = await file.read()
+        translated_data = await run_in_threadpool(translate_foreign_id, file_bytes, file.filename)
+        pdf_buffer = await run_in_threadpool(generate_translated_id_pdf, translated_data, file.filename)
+        return Response(
+            content=pdf_buffer.getvalue(),
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'attachment; filename="Translated_ID_Summary.pdf"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PDF export failed: {exc}") from exc
+
+
 @app.post("/api/translated-id-overlay")
 async def translated_id_overlay_endpoint(
     file: UploadFile = File(...),

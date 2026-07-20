@@ -3,8 +3,10 @@ import { getApiBase } from "./analyzeApi";
 export interface TranslateIdJsonResponse {
   success: boolean;
   filename: string;
+  annotated_image_base64?: string;
+  raw_image_base64?: string;
   translated_data: Record<string, any>;
-  pdf_base64: string;
+  pdf_base64?: string;
 }
 
 const TRANSLATE_MAX_ATTEMPTS = 3;
@@ -19,8 +21,8 @@ function isNetworkError(error: unknown): boolean {
 }
 
 /**
- * Uploads a foreign ID document and returns both the translated JSON structure
- * and the base64-encoded PDF summary. Automatically retries if server is waking up.
+ * Uploads a foreign ID document and returns the translated overlay image (primary output),
+ * extracted English JSON fields, and optional PDF summary base64.
  */
 export async function translateForeignIdJson(
   file: File,
@@ -38,7 +40,7 @@ export async function translateForeignIdJson(
     form.append("file", file);
 
     try {
-      onStatusUpdate?.("Sending document to Gemini 1.5 Flash for vision translation...");
+      onStatusUpdate?.("Detecting foreign text regions & generating English overlay image...");
       const res = await fetch(`${getApiBase()}/api/translate-foreign-id-json`, {
         method: "POST",
         body: form,
@@ -50,7 +52,7 @@ export async function translateForeignIdJson(
         throw new Error(message);
       }
 
-      onStatusUpdate?.("Compiling English PDF report...");
+      onStatusUpdate?.("Finalizing translated ID document overlay...");
       return (await res.json()) as TranslateIdJsonResponse;
     } catch (error) {
       lastError = error;

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef } from "react";
-import { X, UploadCloud, FileText, Download, Loader2, CheckCircle2, AlertCircle, Sparkles } from "lucide-react";
+import { X, UploadCloud, Download, Loader2, CheckCircle2, AlertCircle, Sparkles, Image as ImageIcon, FileText } from "lucide-react";
 import { translateForeignIdJson } from "../lib/translateIdApi";
 
 interface ForeignIdTranslatorModalProps {
@@ -15,6 +15,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [translatedData, setTranslatedData] = useState<Record<string, any> | null>(null);
+  const [annotatedImageBase64, setAnnotatedImageBase64] = useState<string | null>(null);
   const [pdfBase64, setPdfBase64] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [loadingStatus, setLoadingStatus] = useState<string>("Extracting & translating ID...");
@@ -28,6 +29,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
       setSelectedFile(e.target.files[0]);
       setError(null);
       setTranslatedData(null);
+      setAnnotatedImageBase64(null);
       setPdfBase64(null);
       setSuccessMessage(null);
     }
@@ -49,6 +51,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
       setSelectedFile(e.dataTransfer.files[0]);
       setError(null);
       setTranslatedData(null);
+      setAnnotatedImageBase64(null);
       setPdfBase64(null);
       setSuccessMessage(null);
     }
@@ -63,33 +66,31 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
     setLoading(true);
     setError(null);
     setSuccessMessage(null);
-    setLoadingStatus("Connecting to Gemini 1.5 Flash Vision engine...");
+    setLoadingStatus("Connecting to Gemini Vision engine...");
 
     try {
-      // 1. Call translation endpoint which returns JSON + base64 PDF
+      // 1. Call translation endpoint which returns translated overlay image + JSON
       const result = await translateForeignIdJson(selectedFile, (status) => setLoadingStatus(status));
       setTranslatedData(result.translated_data);
-      setPdfBase64(result.pdf_base64);
-
-      // 2. Trigger browser download of PDF summary
-      const byteCharacters = atob(result.pdf_base64);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      if (result.annotated_image_base64) {
+        setAnnotatedImageBase64(result.annotated_image_base64);
       }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: "application/pdf" });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.style.display = "none";
-      a.href = url;
-      a.download = "Translated_ID_Summary.pdf";
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
+      if (result.pdf_base64) {
+        setPdfBase64(result.pdf_base64);
+      }
 
-      setSuccessMessage("Foreign ID details successfully extracted & English PDF summary downloaded!");
+      // 2. Automatically trigger primary download: Translated Overlay Image
+      if (result.annotated_image_base64) {
+        const a = document.createElement("a");
+        a.style.display = "none";
+        a.href = result.annotated_image_base64;
+        a.download = `Translated_${selectedFile.name || "ID_Overlay.jpg"}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+
+      setSuccessMessage("Foreign ID translated! The English overlay image has been downloaded.");
     } catch (err: any) {
       setError(err.message || "Failed to translate foreign ID document.");
     } finally {
@@ -97,7 +98,18 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
     }
   };
 
-  const triggerDownloadAgain = () => {
+  const triggerImageDownloadAgain = () => {
+    if (!annotatedImageBase64) return;
+    const a = document.createElement("a");
+    a.style.display = "none";
+    a.href = annotatedImageBase64;
+    a.download = `Translated_${selectedFile?.name || "ID_Overlay.jpg"}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const triggerPdfDownloadOptional = () => {
     if (!pdfBase64) return;
     const byteCharacters = atob(pdfBase64);
     const byteNumbers = new Array(byteCharacters.length);
@@ -120,6 +132,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
   const resetSelection = () => {
     setSelectedFile(null);
     setTranslatedData(null);
+    setAnnotatedImageBase64(null);
     setPdfBase64(null);
     setError(null);
     setSuccessMessage(null);
@@ -128,7 +141,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-3xl overflow-hidden flex flex-col max-h-[92vh]">
         {/* Modal Header */}
         <div className="px-6 py-5 bg-gradient-to-r from-indigo-900 via-purple-900 to-indigo-800 text-white flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -136,9 +149,9 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
               <Sparkles className="w-6 h-6 text-purple-300" />
             </div>
             <div>
-              <h3 className="font-bold text-lg text-white leading-tight">Foreign ID Translator & PDF Export</h3>
+              <h3 className="font-bold text-lg text-white leading-tight">Foreign ID Translator</h3>
               <p className="text-xs text-indigo-200 mt-0.5">
-                Powered by Gemini 1.5 Flash Vision & ReportLab PDF Generator
+                Translates foreign ID text into English overlaid directly onto the document
               </p>
             </div>
           </div>
@@ -197,14 +210,14 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
 
               <div className="flex flex-col items-center justify-center space-y-3">
                 <div className="w-14 h-14 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600 shadow-sm">
-                  {selectedFile ? <FileText className="w-7 h-7 text-emerald-600" /> : <UploadCloud className="w-7 h-7" />}
+                  {selectedFile ? <ImageIcon className="w-7 h-7 text-emerald-600" /> : <UploadCloud className="w-7 h-7" />}
                 </div>
 
                 {selectedFile ? (
                   <div>
                     <p className="font-semibold text-gray-800 text-base">{selectedFile.name}</p>
                     <p className="text-xs text-gray-500 mt-1">
-                      {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready for Gemini Translation
+                      {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready for Document Overlay Translation
                     </p>
                     <button
                       type="button"
@@ -223,7 +236,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                       Click to upload or drag & drop Foreign ID
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
-                      Supports Passports, National ID Cards, Residence Permits (JPG, PNG, PDF)
+                      Translates text regions into English on the same ID image while preserving photos & layout.
                     </p>
                   </div>
                 )}
@@ -235,37 +248,65 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
               <div className="flex items-center justify-between pb-3 border-b border-gray-100">
                 <h4 className="font-semibold text-gray-800 text-sm flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                  Translated English Details
+                  Translated Document Image
                 </h4>
-                <button
-                  onClick={triggerDownloadAgain}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg transition-colors"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Download PDF Summary
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={triggerImageDownloadAgain}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg shadow-sm transition-colors"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Download Image
+                  </button>
+                  {pdfBase64 && (
+                    <button
+                      onClick={triggerPdfDownloadOptional}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      PDF Report (Optional)
+                    </button>
+                  )}
+                </div>
               </div>
 
-              {/* Data Table */}
-              <div className="bg-gray-50 rounded-xl border border-gray-100 overflow-hidden max-h-60 overflow-y-auto">
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-indigo-900 text-white font-semibold">
-                    <tr>
-                      <th className="px-4 py-2.5">Field Name</th>
-                      <th className="px-4 py-2.5">Translated Detail</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-200/60">
-                    {Object.entries(translatedData).map(([key, val], idx) => (
-                      <tr key={idx} className={idx % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
-                        <td className="px-4 py-2 font-semibold text-gray-800 border-r border-gray-100">{key}</td>
-                        <td className="px-4 py-2 text-gray-700">
-                          {typeof val === "object" ? JSON.stringify(val) : String(val)}
-                        </td>
+              {/* Primary Image Output Preview */}
+              {annotatedImageBase64 ? (
+                <div className="bg-slate-900 rounded-2xl p-4 flex items-center justify-center overflow-hidden max-h-[380px] shadow-inner border border-slate-800">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={annotatedImageBase64}
+                    alt="Translated Foreign ID Overlay"
+                    className="max-h-[350px] w-auto object-contain rounded-lg shadow-lg border border-slate-700"
+                  />
+                </div>
+              ) : null}
+
+              {/* Extracted JSON Data Table */}
+              <div className="space-y-1.5">
+                <h5 className="font-semibold text-gray-700 text-xs uppercase tracking-wider">
+                  Extracted English Fields
+                </h5>
+                <div className="bg-gray-50 rounded-xl border border-gray-100 overflow-hidden max-h-44 overflow-y-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-indigo-900 text-white font-semibold">
+                      <tr>
+                        <th className="px-4 py-2">Field Name</th>
+                        <th className="px-4 py-2">Translated Detail</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200/60">
+                      {Object.entries(translatedData).map(([key, val], idx) => (
+                        <tr key={idx} className={idx % 2 === 0 ? "bg-white" : "bg-gray-50/50"}>
+                          <td className="px-4 py-2 font-semibold text-gray-800 border-r border-gray-100">{key}</td>
+                          <td className="px-4 py-2 text-gray-700">
+                            {typeof val === "object" ? JSON.stringify(val) : String(val)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
               <div className="flex justify-end">
@@ -307,7 +348,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
               ) : (
                 <>
                   <Sparkles className="w-4 h-4" />
-                  <span>Translate ID & Download PDF</span>
+                  <span>Translate ID Document</span>
                 </>
               )}
             </button>
