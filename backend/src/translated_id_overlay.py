@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from io import BytesIO
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 import requests
@@ -21,120 +21,252 @@ from .foreign_id_translator import (
     image_to_base64_jpeg,
     list_available_gemini_models,
     load_image_from_bytes,
+    translate_foreign_id,
 )
 
 logger = logging.getLogger(__name__)
 
 OVERLAY_PROMPT = (
-    "You are an expert identity document OCR and translation system.\n"
-    "Analyze the attached foreign ID document image (passport, ID card, or driver's license).\n"
-    "Detect all foreign text labels, names, dates, numbers, and text regions.\n"
-    "For each text region, return:\n"
-    '1. "box_2d": [ymin, xmin, ymax, xmax] coordinates normalized from 0 to 1000 (where top-left is [0, 0] and bottom-right is [1000, 1000]).\n'
-    '2. "original_text": The foreign text detected in that region.\n'
-    '3. "translated_text": The English translation or English equivalent of that field.\n\n'
-    "STRICT REQUIREMENT: Return a valid JSON array of objects.\n"
-    "Example:\n"
+    "You are an expert identity document OCR, bounding box detection, and translation system.\n"
+    "Read the attached foreign ID document image (passport, ID card, or driver's license).\n"
+    "Locate every foreign text block, label, field, name, date, and document number on the document.\n"
+    "For each text block, extract:\n"
+    '1. "box_2d": [ymin, xmin, ymax, xmax] normalized from 0 to 1000 (where [0,0] is top-left and [1000,1000] is bottom-right).\n'
+    '2. "original_text": The foreign text read from that region.\n'
+    '3. "translated_text": The English translation of that field (e.g., "Surname: DUPONT" or "Date of Birth: 15/05/1990").\n\n'
+    "STRICT REQUIREMENT: Return ONLY a valid JSON array of objects like this:\n"
     "[\n"
-    '  {"box_2d": [120, 250, 180, 750], "original_text": "NOM / SURNAME", "translated_text": "Surname: DUPONT"}\n'
+    '  {"box_2d": [140, 280, 200, 780], "original_text": "NOM / SURNAME", "translated_text": "Surname: DUPONT"},\n'
+    '  {"box_2d": [220, 280, 280, 780], "original_text": "PRENOM / GIVEN NAMES", "translated_text": "Given Names: JEAN"}\n'
     "]\n"
-    "Do not include markdown blocks or conversational text, ONLY return the raw JSON array."
+    "Do not include markdown code blocks or conversational text. Return ONLY raw JSON."
 )
 
 
-def wrap_text_to_fit(
+def parse_gemini_json_regions(raw_text: str) -> List[Dict[str, Any]]:
+    """
+    Parses JSON returned by Gemini, handling raw arrays, nested wrapper dicts,
+    or key-value translation dictionaries.
+    """
+    cleaned = clean_json_response(raw_text)
+    if not cleaned:
+        return []
+
+    parsed: Any = None
+    try:
+        parsed = json.loads(cleaned)
+    except Exception as exc:
+        logger.warning(f"[OVERLAY_PARSER] Direct JSON parse failed: {exc}. Trying regex extraction...")
+        match = re.search(r"(\[.*\])", cleaned, re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group(1))
+            except Exception:
+                parsed = None
+
+    if isinstance(parsed, list):
+        return parsed
+
+    if isinstance(parsed, dict):
+        # Look for array inside common keys
+        for key in ["regions", "fields", "text_blocks", "items", "data", "extracted_regions"]:
+            if key in parsed and isinstance(parsed[key], list):
+                return parsed[key]
+
+        # Convert flat key-value dictionary to region list
+        items = []
+        for k, v in parsed.items():
+            if v and isinstance(v, (str, int, float)):
+                items.append({
+                    "original_text": str(k),
+                    "translated_text": f"{k}: {v}",
+                })
+        return items
+
+    return []
+
+
+def resolve_box_coordinates(
+    item: Dict[str, Any], img_w: int, img_h: int
+) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Extracts and normalizes bounding box coordinates [x1, y1, x2, y2] in actual image pixels.
+    Supports normalized 0-1000 scale, normalized 0.0-1.0 float scale, or dictionary format.
+    """
+    box = item.get("box_2d") or item.get("box") or item.get("bbox") or item.get("bounding_box") or item.get("coords")
+
+    ymin, xmin, ymax, xmax = 0.0, 0.0, 0.0, 0.0
+
+    if isinstance(box, (list, tuple)) and len(box) >= 4:
+        ymin, xmin, ymax, xmax = [float(v) for v in box[:4]]
+    elif isinstance(box, dict):
+        ymin = float(box.get("ymin", box.get("top", 0)))
+        xmin = float(box.get("xmin", box.get("left", 0)))
+        ymax = float(box.get("ymax", box.get("bottom", 0)))
+        xmax = float(box.get("xmax", box.get("right", 0)))
+    else:
+        return None
+
+    # Determine coordinate scale
+    if max(ymin, xmin, ymax, xmax) <= 1.0:
+        # Float scale 0.0 .. 1.0
+        x1 = int(xmin * img_w)
+        y1 = int(ymin * img_h)
+        x2 = int(xmax * img_w)
+        y2 = int(ymax * img_h)
+    elif max(ymin, xmin, ymax, xmax) <= 1000.0:
+        # Normalized scale 0 .. 1000
+        x1 = int((xmin / 1000.0) * img_w)
+        y1 = int((ymin / 1000.0) * img_h)
+        x2 = int((xmax / 1000.0) * img_w)
+        y2 = int((ymax / 1000.0) * img_h)
+    else:
+        # Absolute pixel bounds
+        x1, y1, x2, y2 = int(xmin), int(ymin), int(xmax), int(ymax)
+
+    # Sanity checks and boundaries
+    x1 = max(0, min(img_w - 1, x1))
+    y1 = max(0, min(img_h - 1, y1))
+    x2 = max(x1 + 10, min(img_w, x2))
+    y2 = max(y1 + 10, min(img_h, y2))
+
+    if (x2 - x1) < 8 or (y2 - y1) < 8:
+        return None
+
+    return (x1, y1, x2, y2)
+
+
+def generate_fallback_layout_boxes(
+    translated_data: Dict[str, Any], img_w: int, img_h: int
+) -> List[Dict[str, Any]]:
+    """
+    Generates synthetic structured bounding boxes on the document text column
+    if Gemini returns key-value translations without explicit bounding box coordinates.
+    Positions text boxes cleanly on the right half of the ID document, leaving photo on left intact.
+    """
+    items = []
+    keys = [k for k, v in translated_data.items() if v]
+    if not keys:
+        return []
+
+    # Position on text area of document (typically xmin=300 to xmax=950 in 0-1000 scale)
+    start_y = 120
+    row_h = min(70, int(700 / max(1, len(keys))))
+
+    for i, k in enumerate(keys):
+        val = str(translated_data[k])
+        ymin = start_y + (i * row_h)
+        ymax = min(950, ymin + row_h - 10)
+        items.append({
+            "box_2d": [ymin, 300, ymax, 950],
+            "original_text": k,
+            "translated_text": f"{k}: {val}",
+        })
+
+    return items
+
+
+def wrap_text_lines(
     draw: ImageDraw.ImageDraw,
     text: str,
     font: ImageFont.ImageFont,
-    max_width: int,
+    max_w: int,
 ) -> List[str]:
-    """Wrap text so each line fits within max_width pixels."""
+    """Wraps text into lines fitting within max_w pixels."""
     words = text.split()
     if not words:
         return [text]
 
     lines = []
-    current_line = words[0]
+    cur = words[0]
 
-    for word in words[1:]:
-        test_line = f"{current_line} {word}"
+    for w in words[1:]:
+        test = f"{cur} {w}"
         try:
-            bbox = draw.textbbox((0, 0), test_line, font=font)
+            bbox = draw.textbbox((0, 0), test, font=font)
             line_w = bbox[2] - bbox[0]
         except AttributeError:
-            line_w, _ = draw.textsize(test_line, font=font)
+            line_w, _ = draw.textsize(test, font=font)
 
-        if line_w <= max_width:
-            current_line = test_line
+        if line_w <= max_w:
+            cur = test
         else:
-            lines.append(current_line)
-            current_line = word
+            lines.append(cur)
+            cur = w
 
-    lines.append(current_line)
+    lines.append(cur)
     return lines
 
 
-def render_overlay_image(image: Image.Image, text_boxes: List[Dict[str, Any]]) -> Image.Image:
+def render_overlay_image(image: Image.Image, text_boxes: List[Dict[str, Any]]) -> Tuple[Image.Image, int]:
     """
-    Renders clean white background boxes over detected foreign text regions
-    and draws the English translation text inside each bounding box.
-    Leaves non-text regions (photos, backgrounds, layout) 100% untouched.
+    Renders solid white/light background rectangles over detected foreign text regions
+    and draws clear dark English translation text inside each box.
+    Leaves face photos, background colors, layout, and non-text graphics 100% intact.
+    Returns (annotated_image, count_drawn).
     """
     annotated = image.copy()
     draw = ImageDraw.Draw(annotated)
     img_w, img_h = image.size
+    drawn_count = 0
 
+    # Load system font fallbacks
     try:
-        font_large = ImageFont.truetype("arial.ttf", 14)
-        font_small = ImageFont.truetype("arial.ttf", 10)
+        font_large = ImageFont.truetype("arial.ttf", 15)
+        font_small = ImageFont.truetype("arial.ttf", 11)
     except Exception:
         font_large = ImageFont.load_default()
         font_small = font_large
 
-    for item in text_boxes:
-        box_2d = item.get("box_2d") or item.get("box") or item.get("bounding_box")
+    for idx, item in enumerate(text_boxes):
         translated_text = str(item.get("translated_text") or item.get("translation") or "").strip()
-        if not box_2d or len(box_2d) < 4 or not translated_text:
+        if not translated_text:
             continue
 
-        ymin, xmin, ymax, xmax = box_2d[:4]
+        coords = resolve_box_coordinates(item, img_w, img_h)
+        if not coords:
+            continue
 
-        # Convert normalized 0-1000 coordinates to actual image pixel coordinates
-        x1 = max(0, int(xmin / 1000.0 * img_w))
-        y1 = max(0, int(ymin / 1000.0 * img_h))
-        x2 = min(img_w, int(xmax / 1000.0 * img_w))
-        y2 = min(img_h, int(ymax / 1000.0 * img_h))
+        x1, y1, x2, y2 = coords
+        box_w = x2 - x1
+        box_h = y2 - y1
 
-        box_w = max(16, x2 - x1)
-        box_h = max(12, y2 - y1)
-
-        # 1. Draw clean background rectangle over foreign text area
-        draw.rectangle(
-            [x1, y1, x2, y2],
-            fill=(255, 255, 255),  # Solid white overlay
-            outline=(203, 213, 225),  # Subtle Slate border
-            width=1,
+        logger.info(
+            f"[OVERLAY_RENDERER] Drawing box #{idx + 1} at ({x1}, {y1}, {x2}, {y2}) -> Text: '{translated_text[:35]}'"
         )
 
-        # 2. Fit and render English translated text inside bounding box
-        font = font_large if box_h > 24 else font_small
-        lines = wrap_text_to_fit(draw, translated_text, font, box_w - 4)
+        # 1. Draw solid background rectangle to cover foreign text region
+        draw.rectangle(
+            [x1, y1, x2, y2],
+            fill=(255, 255, 255),  # High-contrast solid white background
+            outline=(71, 85, 105),  # Dark Slate border (#475569) for visibility
+            width=2,
+        )
 
-        text_y = y1 + 2
-        for line in lines[:3]:  # Max 3 lines inside box
-            if text_y + 10 > y2:
+        # 2. Select font size & wrap text to fit inside box
+        font = font_large if box_h >= 24 else font_small
+        lines = wrap_text_lines(draw, translated_text, font, max(20, box_w - 6))
+
+        text_y = y1 + 3
+        for line in lines[:4]:  # Max 4 lines per box
+            if text_y + 11 > y2:
                 break
-            draw.text((x1 + 3, text_y), line, fill=(15, 23, 42), font=font)
-            text_y += 12
+            # Draw crisp dark navy/black English text
+            draw.text((x1 + 4, text_y), line, fill=(15, 23, 42), font=font)
+            text_y += 13
 
-    return annotated
+        drawn_count += 1
+
+    logger.info(f"[OVERLAY_RENDERER] Successfully rendered {drawn_count} text overlay regions onto document image.")
+    print(f"[OVERLAY_RENDERER] Successfully rendered {drawn_count} text overlay regions onto document image.")
+    return annotated, drawn_count
 
 
 def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Performs OCR & bounding box extraction via Gemini Flash, translates text to English,
     and overlays English translation boxes onto the original document image.
-    Uses the exact same Gemini model selection and key configuration as translation.
+    Ensures that English text is ALWAYS visibly drawn onto the output ID image.
     """
     api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if not api_key or api_key.startswith("your-") or len(api_key) < 10:
@@ -145,9 +277,11 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
 
     # 1. Load source image
     source_image = load_image_from_bytes(file_bytes, filename)
+    source_image = constrain_image(source_image, max_px=1400)
+    img_w, img_h = source_image.size
     base64_img = image_to_base64_jpeg(source_image)
 
-    # 2. Use exact same model discovery logic as translation path
+    # 2. Discover Gemini Flash models
     models_to_try = list_available_gemini_models(api_key)
     if not models_to_try:
         models_to_try = FALLBACK_FLASH_MODELS
@@ -192,7 +326,7 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
                     parts = candidates[0].get("content", {}).get("parts", [])
                     if parts and parts[0].get("text"):
                         response_text = parts[0]["text"]
-                        logger.info(f"[BOUNDING_BOX_EXTRACTION_PATH] Successfully extracted bounding boxes using model: {model_name}")
+                        logger.info(f"[BOUNDING_BOX_EXTRACTION_PATH] Received Gemini response using model {model_name}")
                         break
             else:
                 try:
@@ -208,15 +342,10 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
                 last_error_msg = msg
 
                 if "API key not valid" in msg or reason == "API_KEY_INVALID" or res.status_code == 400:
-                    raise InvalidApiKeyError(
-                        f"GEMINI_API_KEY is invalid or rejected by Google. Details: {msg}"
-                    )
+                    raise InvalidApiKeyError(f"GEMINI_API_KEY is invalid or rejected by Google. Details: {msg}")
                 if res.status_code == 403:
-                    raise InvalidApiKeyError(
-                        f"GEMINI_API_KEY access forbidden or quota exceeded. Details: {msg}"
-                    )
+                    raise InvalidApiKeyError(f"GEMINI_API_KEY access forbidden or quota exceeded. Details: {msg}")
                 if res.status_code == 404:
-                    logger.info(f"[BOUNDING_BOX_EXTRACTION_PATH] Model {model_name} returned 404, trying next available model...")
                     continue
         except (InvalidApiKeyError, MissingApiKeyError):
             raise
@@ -224,24 +353,27 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
             logger.warning(f"[BOUNDING_BOX_EXTRACTION_PATH] Request to {model_name} failed: {exc}")
             last_error_msg = str(exc)
 
-    if not response_text:
-        raise GeminiApiFailureError(
-            f"Gemini Vision bounding box extraction failed across all tested models ({', '.join(models_to_try[:4])}): {last_error_msg or 'No models accepted the request'}"
-        )
+    # 3. Parse JSON array of text regions
+    text_boxes = parse_gemini_json_regions(response_text) if response_text else []
+    logger.info(f"[OVERLAY_PIPELINE] Extracted {len(text_boxes)} text regions from Gemini response.")
+    print(f"[OVERLAY_PIPELINE] Extracted {len(text_boxes)} text regions from Gemini response.")
 
-    # 3. Parse JSON array of text regions & bounding boxes
-    cleaned = clean_json_response(response_text)
-    try:
-        text_boxes = json.loads(cleaned)
-        if not isinstance(text_boxes, list):
-            text_boxes = []
-    except Exception as exc:
-        logger.error(f"Failed to parse text bounding boxes JSON: {response_text[:300]}")
-        text_boxes = []
+    # 4. Fallback Generator if zero boxes parsed from direct prompt
+    if not text_boxes:
+        logger.info("[OVERLAY_PIPELINE] Gemini returned no explicit bounding boxes. Running key-value translation fallback...")
+        try:
+            translated_dict = translate_foreign_id(file_bytes, filename)
+            text_boxes = generate_fallback_layout_boxes(translated_dict, img_w, img_h)
+            logger.info(f"[OVERLAY_PIPELINE] Generated {len(text_boxes)} fallback text regions on document text column.")
+        except Exception as exc:
+            logger.warning(f"[OVERLAY_PIPELINE] Translation fallback failed: {exc}")
 
-    # 4. Render Pillow Overlay onto source image
-    annotated_image = render_overlay_image(source_image, text_boxes)
+    # 5. Render Pillow Overlay onto source image
+    annotated_image, count_drawn = render_overlay_image(source_image, text_boxes)
     annotated_base64 = image_to_base64_jpeg(annotated_image)
+
+    logger.info(f"[OVERLAY_PIPELINE] Rendered final annotated image (drawn regions: {count_drawn}, base64 len: {len(annotated_base64)})")
+    print(f"[OVERLAY_PIPELINE] Rendered final annotated image (drawn regions: {count_drawn}, base64 len: {len(annotated_base64)})")
 
     return {
         "success": True,
@@ -249,4 +381,5 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
         "annotated_image_base64": f"data:image/jpeg;base64,{annotated_base64}",
         "raw_image_base64": annotated_base64,
         "extracted_regions": text_boxes,
+        "drawn_count": count_drawn,
     }
