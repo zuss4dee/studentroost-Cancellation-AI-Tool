@@ -224,7 +224,9 @@ def translate_foreign_id(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         }
 
         try:
-            logger.info(f"Calling Gemini REST API with model: {model_name}")
+            msg_log = f"[TRANSLATION_PATH] Using Gemini model: {model_name}"
+            logger.info(msg_log)
+            print(msg_log)
             res = requests.post(url, json=payload, timeout=45)
 
             if res.status_code == 200:
@@ -234,7 +236,7 @@ def translate_foreign_id(file_bytes: bytes, filename: str) -> Dict[str, Any]:
                     parts = candidates[0].get("content", {}).get("parts", [])
                     if parts and parts[0].get("text"):
                         response_text = parts[0]["text"]
-                        logger.info(f"Successfully received response using model: {model_name}")
+                        logger.info(f"[TRANSLATION_PATH] Successfully received response using model: {model_name}")
                         break
             else:
                 try:

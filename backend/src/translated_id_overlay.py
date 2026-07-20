@@ -10,6 +10,19 @@ import fitz  # PyMuPDF
 import requests
 from PIL import Image, ImageDraw, ImageFont
 
+from .foreign_id_translator import (
+    FALLBACK_FLASH_MODELS,
+    GeminiApiFailureError,
+    InvalidApiKeyError,
+    InvalidModelError,
+    MissingApiKeyError,
+    clean_json_response,
+    constrain_image,
+    image_to_base64_jpeg,
+    list_available_gemini_models,
+    load_image_from_bytes,
+)
+
 logger = logging.getLogger(__name__)
 
 OVERLAY_PROMPT = (
@@ -27,54 +40,6 @@ OVERLAY_PROMPT = (
     "]\n"
     "Do not include markdown blocks or conversational text, ONLY return the raw JSON array."
 )
-
-
-def load_image_from_bytes(file_bytes: bytes, filename: str) -> Image.Image:
-    """Convert uploaded file bytes (PDF or Image) into a PIL Image."""
-    ext = filename.lower().split(".")[-1] if "." in filename else ""
-    if ext == "pdf":
-        try:
-            pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
-            if len(pdf_doc) == 0:
-                raise ValueError("PDF file is empty.")
-            page = pdf_doc[0]
-            pix = page.get_pixmap(dpi=150)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            pdf_doc.close()
-            return img
-        except Exception as exc:
-            raise ValueError(f"Could not read PDF file: {exc}") from exc
-    else:
-        try:
-            img = Image.open(BytesIO(file_bytes))
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            return img
-        except Exception as exc:
-            raise ValueError(f"Could not read image file: {exc}") from exc
-
-
-def image_to_base64_jpeg(image: Image.Image) -> str:
-    """Convert PIL image to base64 JPEG string."""
-    buf = BytesIO()
-    rgb = image if image.mode == "RGB" else image.convert("RGB")
-    rgb.save(buf, format="JPEG", quality=88, optimize=True)
-    return base64.b64encode(buf.getvalue()).decode("utf-8")
-
-
-def clean_json_response(raw_text: str) -> str:
-    """Strip markdown fences if present."""
-    text = raw_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\n?", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\n?```$", "", text)
-    text = text.strip()
-
-    if not (text.startswith("[") and text.endswith("]")):
-        match = re.search(r"(\[.*\])", text, re.DOTALL)
-        if match:
-            text = match.group(1).strip()
-    return text
 
 
 def wrap_text_to_fit(
@@ -119,7 +84,6 @@ def render_overlay_image(image: Image.Image, text_boxes: List[Dict[str, Any]]) -
     draw = ImageDraw.Draw(annotated)
     img_w, img_h = image.size
 
-    # Load font or default
     try:
         font_large = ImageFont.truetype("arial.ttf", 14)
         font_small = ImageFont.truetype("arial.ttf", 10)
@@ -170,24 +134,23 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
     """
     Performs OCR & bounding box extraction via Gemini Flash, translates text to English,
     and overlays English translation boxes onto the original document image.
+    Uses the exact same Gemini model selection and key configuration as translation.
     """
     api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if not api_key or api_key.startswith("your-") or len(api_key) < 10:
-        raise ValueError(
-            "GEMINI_API_KEY is missing or invalid. Please set GEMINI_API_KEY under Render Dashboard -> Environment Variables."
+        raise MissingApiKeyError(
+            "GEMINI_API_KEY is not configured in backend environment. "
+            "Please set a valid GEMINI_API_KEY under Render Dashboard -> Environment Variables."
         )
 
     # 1. Load source image
     source_image = load_image_from_bytes(file_bytes, filename)
     base64_img = image_to_base64_jpeg(source_image)
 
-    # 2. Call Gemini Flash API for Bounding Box + Translation
-    models_to_try = [
-        "gemini-1.5-flash",
-        "gemini-2.0-flash-exp",
-        "gemini-2.0-flash",
-        "gemini-1.5-pro",
-    ]
+    # 2. Use exact same model discovery logic as translation path
+    models_to_try = list_available_gemini_models(api_key)
+    if not models_to_try:
+        models_to_try = FALLBACK_FLASH_MODELS
 
     response_text = ""
     last_error_msg = ""
@@ -217,7 +180,10 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
         }
 
         try:
-            logger.info(f"Detecting text regions & bounding boxes with model {model_name}...")
+            msg_log = f"[BOUNDING_BOX_EXTRACTION_PATH] Using Gemini model: {model_name}"
+            logger.info(msg_log)
+            print(msg_log)
+
             res = requests.post(url, json=payload, timeout=45)
             if res.status_code == 200:
                 data = res.json()
@@ -226,22 +192,41 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
                     parts = candidates[0].get("content", {}).get("parts", [])
                     if parts and parts[0].get("text"):
                         response_text = parts[0]["text"]
+                        logger.info(f"[BOUNDING_BOX_EXTRACTION_PATH] Successfully extracted bounding boxes using model: {model_name}")
                         break
             else:
                 try:
                     err_json = res.json()
                 except Exception:
                     err_json = {}
-                msg = (err_json.get("error") or {}).get("message") or f"HTTP {res.status_code}: {res.text[:150]}"
-                logger.warning(f"Model {model_name} returned status {res.status_code}: {msg}")
+
+                err_obj = err_json.get("error") or {}
+                msg = err_obj.get("message") or f"HTTP {res.status_code}: {res.text[:150]}"
+                reason = (err_obj.get("details", [{}])[0] if err_obj.get("details") else {}).get("reason", "")
+
+                logger.warning(f"[BOUNDING_BOX_EXTRACTION_PATH] Model {model_name} failed with status {res.status_code}: {msg}")
                 last_error_msg = msg
+
+                if "API key not valid" in msg or reason == "API_KEY_INVALID" or res.status_code == 400:
+                    raise InvalidApiKeyError(
+                        f"GEMINI_API_KEY is invalid or rejected by Google. Details: {msg}"
+                    )
+                if res.status_code == 403:
+                    raise InvalidApiKeyError(
+                        f"GEMINI_API_KEY access forbidden or quota exceeded. Details: {msg}"
+                    )
+                if res.status_code == 404:
+                    logger.info(f"[BOUNDING_BOX_EXTRACTION_PATH] Model {model_name} returned 404, trying next available model...")
+                    continue
+        except (InvalidApiKeyError, MissingApiKeyError):
+            raise
         except Exception as exc:
-            logger.warning(f"Overlay request to {model_name} failed: {exc}")
+            logger.warning(f"[BOUNDING_BOX_EXTRACTION_PATH] Request to {model_name} failed: {exc}")
             last_error_msg = str(exc)
 
     if not response_text:
-        raise RuntimeError(
-            f"Gemini Vision bounding box extraction failed: {last_error_msg or 'No models accepted the request'}"
+        raise GeminiApiFailureError(
+            f"Gemini Vision bounding box extraction failed across all tested models ({', '.join(models_to_try[:4])}): {last_error_msg or 'No models accepted the request'}"
         )
 
     # 3. Parse JSON array of text regions & bounding boxes
