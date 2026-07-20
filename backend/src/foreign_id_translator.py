@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -6,6 +7,7 @@ from io import BytesIO
 from typing import Any, Dict
 
 import fitz  # PyMuPDF
+import requests
 from PIL import Image
 
 logger = logging.getLogger(__name__)
@@ -19,7 +21,7 @@ PROMPT_TEXT = (
 )
 
 
-def constrain_image(image: Image.Image, max_px: int = 1600) -> Image.Image:
+def constrain_image(image: Image.Image, max_px: int = 1400) -> Image.Image:
     """Downscale large images before sending to Gemini API to speed up processing."""
     width, height = image.size
     longest = max(width, height)
@@ -70,66 +72,100 @@ def clean_json_response(raw_text: str) -> str:
     return text
 
 
+def image_to_base64_jpeg(image: Image.Image) -> str:
+    """Convert PIL image to base64 JPEG string."""
+    buf = BytesIO()
+    rgb = image if image.mode == "RGB" else image.convert("RGB")
+    rgb.save(buf, format="JPEG", quality=85, optimize=True)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
 def translate_foreign_id(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
-    Analyzes an uploaded foreign ID (image or PDF) using Google Gemini Flash vision,
+    Analyzes an uploaded foreign ID (image or PDF) using Google Gemini Flash vision REST API,
     extracts details, translates to English, and returns a Python dictionary.
     """
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if not api_key:
+    api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+    if not api_key or api_key.startswith("your-") or len(api_key) < 10:
         raise ValueError(
-            "GEMINI_API_KEY is not configured in backend environment. Please set GEMINI_API_KEY in backend/.env or Render dashboard."
+            "GEMINI_API_KEY is not configured in backend environment. "
+            "Please set a valid GEMINI_API_KEY under Render Dashboard -> Environment Variables."
         )
 
+    # 1. Convert uploaded file to PIL Image and downscale for speed
     image = load_image_from_bytes(file_bytes, filename)
-    models_to_try = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+    base64_img = image_to_base64_jpeg(image)
+
+    # 2. Try Gemini models via direct Google REST API
+    models_to_try = [
+        "gemini-1.5-flash",
+        "gemini-2.0-flash-exp",
+        "gemini-2.0-flash",
+        "gemini-1.5-pro",
+    ]
+
     response_text = ""
-    last_error = None
+    last_error_msg = ""
 
-    # 1. Try new google-genai SDK first
-    try:
-        from google import genai
-        client = genai.Client(api_key=api_key)
-        for model_name in models_to_try:
-            try:
-                logger.info(f"Calling google-genai SDK with model: {model_name}")
-                res = client.models.generate_content(
-                    model=model_name,
-                    contents=[image, PROMPT_TEXT],
-                )
-                if res and res.text:
-                    response_text = res.text
-                    break
-            except Exception as exc:
-                logger.warning(f"google-genai model {model_name} failed: {exc}")
-                last_error = exc
-    except Exception as exc:
-        logger.info(f"google-genai SDK attempt skipped: {exc}")
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": base64_img,
+                            }
+                        },
+                        {
+                            "text": PROMPT_TEXT,
+                        },
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.1,
+                "responseMimeType": "application/json",
+            },
+        }
 
-    # 2. Fall back to legacy google.generativeai SDK if needed
-    if not response_text:
         try:
-            import google.generativeai as legacy_genai
-            legacy_genai.configure(api_key=api_key)
-            os.environ["GOOGLE_API_KEY"] = api_key
-            for model_name in models_to_try:
-                try:
-                    logger.info(f"Calling google.generativeai SDK with model: {model_name}")
-                    model = legacy_genai.GenerativeModel(model_name)
-                    res = model.generate_content([image, PROMPT_TEXT])
-                    if res and res.text:
-                        response_text = res.text
+            logger.info(f"Posting to Gemini REST API for model {model_name}...")
+            res = requests.post(url, json=payload, timeout=45)
+
+            if res.status_code == 200:
+                data = res.json()
+                candidates = data.get("candidates") or []
+                if candidates:
+                    parts = candidates[0].get("content", {}).get("parts", [])
+                    if parts and parts[0].get("text"):
+                        response_text = parts[0]["text"]
                         break
-                except Exception as exc:
-                    logger.warning(f"google.generativeai model {model_name} failed: {exc}")
-                    last_error = exc
+            else:
+                try:
+                    err_json = res.json()
+                except Exception:
+                    err_json = {}
+                msg = (err_json.get("error") or {}).get("message") or f"HTTP {res.status_code}: {res.text[:150]}"
+                logger.warning(f"Gemini REST API model {model_name} returned status {res.status_code}: {msg}")
+                last_error_msg = msg
+
+                if "API key not valid" in msg or "API_KEY_INVALID" in str(err_json):
+                    raise ValueError(
+                        f"GEMINI_API_KEY is invalid or rejected by Google. Details: {msg}"
+                    )
+        except ValueError:
+            raise
         except Exception as exc:
-            logger.error(f"Legacy google.generativeai failed: {exc}")
-            last_error = exc
+            logger.warning(f"Request to {model_name} failed: {exc}")
+            last_error_msg = str(exc)
 
     if not response_text:
-        raise RuntimeError(
-            f"Gemini API request failed across all models ({', '.join(models_to_try)}): {last_error}"
+        raise ValueError(
+            f"Gemini API request failed: {last_error_msg or 'No models accepted the request'}. "
+            "Please check GEMINI_API_KEY in your Render environment variables."
         )
 
     # 3. Clean and parse JSON response
