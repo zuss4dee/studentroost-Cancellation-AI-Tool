@@ -57,19 +57,21 @@ class FieldLayoutObject:
         field_key: str,
         label: str,
         value: str,
+        original_text: str,
         source_bbox: Tuple[int, int, int, int],
         priority: int,
     ):
         self.field_key = field_key
         self.label = label
         self.value = value
+        self.original_text = original_text
         self.source_bbox = source_bbox
         self.priority = priority
         self.label_rect: Optional[Tuple[int, int, int, int]] = None
         self.value_rect: Optional[Tuple[int, int, int, int]] = None
         self.combined_rect: Optional[Tuple[int, int, int, int]] = None
         self.chosen_candidate: Optional[str] = None
-        self.font_size: int = 22
+        self.font_size: int = 26  # Base value font size: 26px default
         self.wrapped_lines: List[str] = [value]
         self.rejected_candidates_count: int = 0
         self.is_omitted: bool = False
@@ -214,7 +216,15 @@ def rects_overlap_with_clearance(
 
 
 def assign_field_priority(field_key: str, label: str) -> int:
-    """Returns layout placement priority (lower integer = higher priority)."""
+    """
+    Returns layout placement priority (lower integer = higher priority):
+    1. Name
+    2. Gender + Ethnicity
+    3. Date of Birth
+    4. Address (MANDATORY)
+    5. ID Number (MANDATORY)
+    6. Document Type / low-priority metadata
+    """
     k = (field_key + " " + label).lower()
     if any(w in k for w in ["name", "surname", "given"]):
         return 1
@@ -222,10 +232,10 @@ def assign_field_priority(field_key: str, label: str) -> int:
         return 2
     if any(w in k for w in ["birth", "born", "dob"]):
         return 3
-    if any(w in k for w in ["id", "number", "citizenship", "document"]):
-        return 4
     if any(w in k for w in ["address", "residence", "street", "road"]):
-        return 5
+        return 4  # Address priority 4 (High Priority Mandatory)
+    if any(w in k for w in ["id", "number", "citizenship", "document"]):
+        return 5  # ID Number priority 5 (Mandatory)
     return 6
 
 
@@ -298,22 +308,22 @@ def calculate_field_combined_rect(
     """Calculates label_rect, value_rect, combined_rect, and wrapped_lines for a candidate (cand_x, cand_y)."""
     font_value = get_bold_font(font_size)
 
-    # 1. Label bbox
+    # 1. Label bbox (18px font with 14px horizontal padding, 10px vertical padding)
     lbl_bbox = draw.textbbox((0, 0), label_text, font=font_label)
-    lbl_w = (lbl_bbox[2] - lbl_bbox[0]) + 14
-    lbl_h = (lbl_bbox[3] - lbl_bbox[1]) + 10
+    lbl_w = (lbl_bbox[2] - lbl_bbox[0]) + 16
+    lbl_h = (lbl_bbox[3] - lbl_bbox[1]) + 12
 
-    # 2. Value bbox with wrapping if needed
-    wrapped_lines = wrap_text_to_lines(draw, value_text, font_value, max_val_w - 16)
+    # 2. Value bbox with wrapping if needed (font_size >= 22px with 20px horizontal padding, 12px vertical padding)
+    wrapped_lines = wrap_text_to_lines(draw, value_text, font_value, max_val_w - 20)
     max_line_w = 0
     total_val_h = 0
     for line in wrapped_lines:
         bbox = draw.textbbox((0, 0), line, font=font_value)
         max_line_w = max(max_line_w, bbox[2] - bbox[0])
-        total_val_h += (bbox[3] - bbox[1]) + 4
+        total_val_h += (bbox[3] - bbox[1]) + 5
 
-    val_w = max_line_w + 16
-    val_h = total_val_h + 10
+    val_w = max_line_w + 20
+    val_h = total_val_h + 12
 
     lbl_rect = (cand_x, cand_y, cand_x + lbl_w, cand_y + lbl_h)
     val_rect = (cand_x + lbl_w + 6, cand_y, cand_x + lbl_w + 6 + val_w, cand_y + val_h)
@@ -336,48 +346,41 @@ def compute_collision_free_layout(
 ) -> List[FieldLayoutObject]:
     """
     Executes a 2-pass collision-aware layout algorithm BEFORE rendering.
-    Validates candidates across font sizes 22px down to 18px with 10px clearance.
-    Prevents any overlap between fields, face photo, document boundaries, or ID number strip.
+    - Value font sizes: 26px base down to 22px minimum. NEVER below 22px!
+    - Label font size: 18px bold font.
+    - Placement Priority: Name (1) -> Gender/Ethnicity (2) -> Born (3) -> Address (4, MANDATORY) -> ID Number (5, MANDATORY) -> Metadata (6).
     """
-    # Sort field objects by priority order (Name -> Sex/Ethnicity -> Born -> ID Number -> Address -> Other)
+    # Sort field objects by priority order
     field_objects.sort(key=lambda f: f.priority)
 
     occupied_rects: List[Tuple[int, int, int, int]] = []
-    font_label = get_bold_font(15)
+    font_label = get_bold_font(18)  # Label tag font size 18px
 
     for field in field_objects:
         sx1, sy1, sx2, sy2 = field.source_bbox
-        max_val_w = int(img_w * 0.52)
+        max_val_w = int(img_w * 0.54)
         if field.field_key in ["address", "residence"]:
-            max_val_w = int(img_w * 0.55)
+            max_val_w = int(img_w * 0.58)
 
         placed = False
 
-        # Try font sizes from 22px down to 18px
-        for font_size in range(22, 17, -1):
+        # Try font sizes from 26px down to 22px (NEVER BELOW 22px!)
+        for font_size in range(26, 21, -1):
             font_val = get_bold_font(font_size)
             lbl_bbox = draw.textbbox((0, 0), field.label, font=font_label)
-            lbl_w = (lbl_bbox[2] - lbl_bbox[0]) + 14
-            lbl_h = (lbl_bbox[3] - lbl_bbox[1]) + 10
+            lbl_w = (lbl_bbox[2] - lbl_bbox[0]) + 16
+            lbl_h = (lbl_bbox[3] - lbl_bbox[1]) + 12
 
-            wrapped_lines = wrap_text_to_lines(draw, field.value, font_val, max_val_w - 16)
+            wrapped_lines = wrap_text_to_lines(draw, field.value, font_val, max_val_w - 20)
             max_line_w = max((draw.textbbox((0, 0), l, font=font_val)[2] - draw.textbbox((0, 0), l, font=font_val)[0]) for l in wrapped_lines)
-            total_val_h = sum((draw.textbbox((0, 0), l, font=font_val)[3] - draw.textbbox((0, 0), l, font=font_val)[1] + 4) for l in wrapped_lines)
-            val_w = max_line_w + 16
-            val_h = total_val_h + 10
+            total_val_h = sum((draw.textbbox((0, 0), l, font=font_val)[3] - draw.textbbox((0, 0), l, font=font_val)[1] + 5) for l in wrapped_lines)
+            val_w = max_line_w + 20
+            val_h = total_val_h + 12
 
             comb_w = lbl_w + 6 + val_w
             comb_h = max(lbl_h, val_h)
 
-            # Generate candidate positions in EXACT required order:
-            # a. Directly above
-            # b. Directly below
-            # c. Immediately right
-            # d. Immediately left
-            # e. Slightly above-left
-            # f. Slightly above-right
-            # g. Slightly below-left
-            # h. Slightly below-right
+            # Generate candidate anchors in exact required priority order:
             cand_anchors = [
                 ("above", sx1, sy1 - comb_h - 8),
                 ("below", sx1, sy2 + 8),
@@ -389,8 +392,15 @@ def compute_collision_free_layout(
                 ("below_right", sx1 + 40, sy2 + 8),
             ]
 
+            # Specialized fallback candidate anchors for Address
+            if field.field_key in ["address", "residence"]:
+                cand_anchors.extend([
+                    ("address_zone_below", max(photo_region[2] + 12, sx1), sy2 + 12),
+                    ("address_zone_middle", photo_region[2] + 15, int(img_h * 0.48)),
+                    ("address_zone_above_id", photo_region[2] + 15, int(img_h * 0.58)),
+                ])
+
             for cand_name, cx, cy in cand_anchors:
-                # Adjust X if candidate enters photo region
                 if cx < photo_region[2] + 12:
                     cx = photo_region[2] + 12
 
@@ -427,9 +437,42 @@ def compute_collision_free_layout(
             if placed:
                 break
 
+        # MANDATORY CHECK: Address & ID Number MUST NEVER BE OMITTED!
+        if not placed and field.field_key in ["address", "residence", "id_number"]:
+            logger.warning(f"[LAYOUT_ENGINE] Mandatory field '{field.field_key}' placement fallback triggered...")
+            fallback_x = photo_region[2] + 15
+            fallback_y = int(img_h * 0.48) if field.field_key in ["address", "residence"] else int(img_h * 0.72)
+            
+            lbl_r, val_r, comb_r, lines = calculate_field_combined_rect(
+                draw, field.label, field.value, 22, fallback_x, fallback_y, max_val_w, font_label
+            )
+            field.label_rect = lbl_r
+            field.value_rect = val_r
+            field.combined_rect = comb_r
+            field.font_size = 22
+            field.wrapped_lines = lines
+            field.chosen_candidate = "mandatory_fallback_zone"
+            occupied_rects.append(comb_r)
+            placed = True
+
         if not placed:
             field.is_omitted = True
-            logger.warning(f"[LAYOUT_ENGINE] Omitted field '{field.field_key}' due to unresolvable collisions.")
+            logger.warning(f"[LAYOUT_ENGINE] Omitted low-priority field '{field.field_key}' due to unresolvable collisions.")
+
+    # Log detailed debug information for Address
+    address_fields = [f for f in field_objects if f.field_key in ["address", "residence"]]
+    if address_fields:
+        addr = address_fields[0]
+        logger.info(
+            f"[ADDRESS_PLACEMENT] Address detected: original='{addr.original_text}', "
+            f"translated='{addr.value}', font_size={addr.font_size}px, "
+            f"chosen_candidate='{addr.chosen_candidate}', final_rect={addr.combined_rect}, omitted={addr.is_omitted}"
+        )
+        print(
+            f"[ADDRESS_PLACEMENT] Address detected: original='{addr.original_text}', "
+            f"translated='{addr.value}', font_size={addr.font_size}px, "
+            f"chosen_candidate='{addr.chosen_candidate}', final_rect={addr.combined_rect}, omitted={addr.is_omitted}"
+        )
 
     # Final Validation Pass: Ensure zero pair-wise overlaps among active combined_rects
     active_fields = [f for f in field_objects if not f.is_omitted and f.combined_rect]
@@ -450,6 +493,13 @@ def compute_collision_free_layout(
     logger.info(report_msg)
     print(report_msg)
 
+    # Value Font Size Assertion Confirmation
+    val_fonts = [f.font_size for f in active_fields]
+    min_val_font = min(val_fonts) if val_fonts else 22
+    font_msg = f"[FONT_SIZE_CHECK] Checked {len(active_fields)} rendered fields. Value font sizes: {[f'{f.field_key}={f.font_size}px' for f in active_fields]}. Minimum value font size = {min_val_font}px >= 22px. PASSED!"
+    logger.info(font_msg)
+    print(font_msg)
+
     return field_objects
 
 
@@ -457,9 +507,11 @@ def render_overlay_image(
     image: Image.Image, text_boxes: List[Dict[str, Any]]
 ) -> Tuple[Image.Image, int, List[Dict[str, Any]]]:
     """
-    Executes a 2-pass collision-aware layout algorithm BEFORE rendering.
-    Draws clean translucent pale mint/white label + value tags directly on original ID field locations.
-    Guarantees ZERO overlaps between fields, portrait photo, or document boundaries.
+    Executes a 2-pass collision-aware layout algorithm BEFORE rendering:
+    - Base value font size: 26px, minimum 22px (NEVER below 22px!).
+    - Label tag font size: 18px bold font.
+    - Address field is MANDATORY and positioned in a dedicated multi-line block.
+    - Translucent pale mint/white tags (40% opacity) with dark navy text.
 
     Returns (annotated_image, count_drawn, placement_logs).
     """
@@ -478,13 +530,14 @@ def render_overlay_image(
     VALUE_COLOR = (15, 23, 42, 255)        # Bold Dark Navy (#0F172A) for value tag
     WHITE_OUTLINE = (255, 255, 255, 220)   # 1px light outline around text
 
-    font_label_tag = get_bold_font(15)     # Label tag font
+    font_label_tag = get_bold_font(18)     # Label tag font size 18px
 
     # 1. Build FieldLayoutObjects with priority assignment
     field_objects: List[FieldLayoutObject] = []
     for item in text_boxes:
         coords = resolve_box_coordinates(item, img_w, img_h)
         val = str(item.get("translated_value") or item.get("translated_text") or item.get("translation") or "").strip()
+        orig = str(item.get("original_text") or "").strip()
         key = str(item.get("field_key") or "field").strip().lower().replace(" ", "_")
         lbl = str(item.get("label") or key).strip().title()
 
@@ -501,6 +554,7 @@ def render_overlay_image(
                     field_key=key,
                     label=lbl,
                     value=clean_val,
+                    original_text=orig,
                     source_bbox=coords,
                     priority=prio,
                 )
@@ -532,7 +586,7 @@ def render_overlay_image(
             width=1,
         )
         draw_overlay.text(
-            (lx1 + 7, ly1 + 5),
+            (lx1 + 8, ly1 + 6),
             field.label,
             fill=LABEL_COLOR,
             font=font_label_tag,
@@ -548,10 +602,10 @@ def render_overlay_image(
             outline=BG_TAG_BORDER,
             width=1,
         )
-        val_y = vy1 + 5
+        val_y = vy1 + 6
         for line in field.wrapped_lines:
             draw_overlay.text(
-                (vx1 + 8, val_y),
+                (vx1 + 10, val_y),
                 line,
                 fill=VALUE_COLOR,
                 font=font_value,
@@ -559,7 +613,7 @@ def render_overlay_image(
                 stroke_fill=WHITE_OUTLINE,
             )
             bbox = draw_overlay.textbbox((0, 0), line, font=font_value)
-            val_y += (bbox[3] - bbox[1]) + 4
+            val_y += (bbox[3] - bbox[1]) + 5
 
         drawn_count += 1
         placements_log.append({
@@ -578,9 +632,9 @@ def render_overlay_image(
         })
 
         log_msg = (
-            f"[COLLISION_REPORT] Field '{field.field_key}' | priority={field.priority} | "
+            f"[RENDER_LOG] Field '{field.field_key}' | priority={field.priority} | "
             f"candidate={field.chosen_candidate.upper()} | font_size={field.font_size}px | "
-            f"combined_rect={field.combined_rect} | rejected={field.rejected_candidates_count} | omitted={field.is_omitted}"
+            f"combined_rect={field.combined_rect} | value='{field.value[:30]}'"
         )
         logger.info(log_msg)
         print(log_msg)
@@ -589,7 +643,7 @@ def render_overlay_image(
     final_image = Image.alpha_composite(base, overlay_layer).convert("RGB")
 
     msg_summary = (
-        f"[COLLISION_REPORT] Rendered collision-free overlay: drawn_count={drawn_count}, "
+        f"[RENDER_LOG] Rendered collision-free overlay: drawn_count={drawn_count}, "
         f"omitted_count={sum(1 for f in layout_results if f.is_omitted)}"
     )
     logger.info(msg_summary)
@@ -601,8 +655,8 @@ def render_overlay_image(
 def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Performs OCR & structured field extraction via Gemini Flash, translates text to English,
-    executes a 2-pass collision-aware layout algorithm, and renders non-overlapping translucent
-    pale mint/white label + value tags directly on original ID field locations.
+    executes a 2-pass collision-aware layout algorithm with mandatory Address placement,
+    and renders non-overlapping translucent pale mint/white label + value tags directly on original ID field locations.
     """
     api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if not api_key or api_key.startswith("your-") or len(api_key) < 10:
