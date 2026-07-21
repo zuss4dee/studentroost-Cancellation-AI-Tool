@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useState, useRef } from "react";
-import { X, UploadCloud, Download, Loader2, CheckCircle2, AlertCircle, Sparkles, Image as ImageIcon, FileText, Eye, EyeOff, Info } from "lucide-react";
-import { translateForeignIdJson, PlacementItem } from "../lib/translateIdApi";
+import { X, UploadCloud, Download, Loader2, CheckCircle2, AlertCircle, Sparkles, Image as ImageIcon, FileText, Eye, EyeOff } from "lucide-react";
+import { translateForeignIdJson } from "../lib/translateIdApi";
 
 interface ForeignIdTranslatorModalProps {
   isOpen: boolean;
@@ -18,11 +18,9 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
   const [annotatedImageBase64, setAnnotatedImageBase64] = useState<string | null>(null);
   const [originalImageBase64, setOriginalImageBase64] = useState<string | null>(null);
   const [pdfBase64, setPdfBase64] = useState<string | null>(null);
-  const [placements, setPlacements] = useState<PlacementItem[]>([]);
   const [showOverlay, setShowOverlay] = useState(true);
-  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [loadingStatus, setLoadingStatus] = useState<string>("Extracting & translating ID...");
+  const [loadingStatus, setLoadingStatus] = useState<string>("Translating…");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -36,7 +34,6 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
       setAnnotatedImageBase64(null);
       setOriginalImageBase64(null);
       setPdfBase64(null);
-      setPlacements([]);
       setSuccessMessage(null);
     }
   };
@@ -60,21 +57,20 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
       setAnnotatedImageBase64(null);
       setOriginalImageBase64(null);
       setPdfBase64(null);
-      setPlacements([]);
       setSuccessMessage(null);
     }
   };
 
   const handleTranslateAndDownload = async () => {
     if (!selectedFile) {
-      setError("Please select a foreign ID card or passport file first.");
+      setError("Please select a document file first.");
       return;
     }
 
     setLoading(true);
     setError(null);
     setSuccessMessage(null);
-    setLoadingStatus("Connecting to Gemini Vision engine...");
+    setLoadingStatus("Translating…");
 
     try {
       const result = await translateForeignIdJson(selectedFile, (status) => setLoadingStatus(status));
@@ -88,13 +84,11 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
       if (result.pdf_base64) {
         setPdfBase64(result.pdf_base64);
       }
-      if (result.placements) {
-        setPlacements(result.placements);
-      }
 
-      setSuccessMessage("Foreign ID translated. Review the annotated image, then download if needed.");
+      setSuccessMessage("Translation complete. Review the document, then download if needed.");
     } catch (err: any) {
-      setError(err.message || "Failed to translate foreign ID document.");
+      setError("Translation could not be completed.");
+      console.error("[TRANSLATION_ERROR]", err);
     } finally {
       setLoading(false);
     }
@@ -105,7 +99,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
     const a = document.createElement("a");
     a.style.display = "none";
     a.href = annotatedImageBase64;
-    a.download = `Translated_${selectedFile?.name.replace(/\.[^/.]+$/, "") || "ID"}.png`;
+    a.download = `Translated_${selectedFile?.name.replace(/\.[^/.]+$/, "") || "Document"}.png`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -124,7 +118,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
     const a = document.createElement("a");
     a.style.display = "none";
     a.href = url;
-    a.download = "Translated_ID_Summary.pdf";
+    a.download = "Translated_Document.pdf";
     document.body.appendChild(a);
     a.click();
     window.URL.revokeObjectURL(url);
@@ -137,7 +131,6 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
     setAnnotatedImageBase64(null);
     setOriginalImageBase64(null);
     setPdfBase64(null);
-    setPlacements([]);
     setError(null);
     setSuccessMessage(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -153,9 +146,9 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
               <Sparkles className="w-6 h-6 text-purple-300" />
             </div>
             <div>
-              <h3 className="font-bold text-lg text-white leading-tight">Foreign ID Translator</h3>
+              <h3 className="font-bold text-lg text-white leading-tight">Document Translator</h3>
               <p className="text-xs text-indigo-200 mt-0.5">
-                Translated Copy Layout — Field Labels & Translucent Highlight Tags
+                Translate identity documents into English
               </p>
             </div>
           </div>
@@ -221,7 +214,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                   <div>
                     <p className="font-semibold text-gray-800 text-base">{selectedFile.name}</p>
                     <p className="text-xs text-gray-500 mt-1">
-                      {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready for Translated Copy Generation
+                      {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready to translate
                     </p>
                     <button
                       type="button"
@@ -237,10 +230,10 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                 ) : (
                   <div>
                     <p className="font-semibold text-gray-700 text-sm">
-                      Click to upload or drag & drop Foreign ID
+                      Click to upload or drag & drop document
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
-                      Generates a clean translated copy with English field tags directly on the ID document.
+                      Upload a clear image or PDF to create an English version for review.
                     </p>
                   </div>
                 )}
@@ -253,9 +246,9 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                 <div className="flex items-center gap-3">
                   <h4 className="font-semibold text-gray-800 text-sm flex items-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                    Translated Document Preview
+                    Translated Document
                   </h4>
-                  {/* Show Overlays Toggle Switch */}
+                  {/* Show Translation Toggle Switch */}
                   <button
                     type="button"
                     onClick={() => setShowOverlay(!showOverlay)}
@@ -266,7 +259,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                     }`}
                   >
                     {showOverlay ? <Eye className="w-3.5 h-3.5 text-indigo-600" /> : <EyeOff className="w-3.5 h-3.5 text-gray-500" />}
-                    <span>{showOverlay ? "Translated Copy: ON" : "Original Card Only"}</span>
+                    <span>{showOverlay ? "Translation: On" : "Show Translation"}</span>
                   </button>
                 </div>
 
@@ -276,7 +269,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                     className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg shadow-sm transition-colors"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    Download PNG
+                    Download
                   </button>
                   {pdfBase64 && (
                     <button
@@ -284,7 +277,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
                     >
                       <FileText className="w-3.5 h-3.5" />
-                      PDF Report (Optional)
+                      Download PDF
                     </button>
                   )}
                 </div>
@@ -295,69 +288,36 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={showOverlay && annotatedImageBase64 ? annotatedImageBase64 : (originalImageBase64 || annotatedImageBase64 || "")}
-                  alt="Translated Foreign ID Copy"
+                  alt="Translated Document"
                   className="max-h-[350px] w-auto object-contain rounded-lg shadow-lg border border-slate-700"
                 />
-
-                {/* Floating Tooltip when hovering over a field row */}
-                {hoveredIndex !== null && placements[hoveredIndex] && (
-                  <div className="absolute top-6 left-6 z-20 bg-slate-950/90 text-white border border-emerald-500/50 rounded-xl p-3 shadow-2xl backdrop-blur-md max-w-sm animate-in fade-in duration-150">
-                    <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-300 uppercase tracking-wider mb-1">
-                      <Info className="w-3.5 h-3.5" />
-                      Field: {placements[hoveredIndex].label || placements[hoveredIndex].field_key}
-                    </div>
-                    <p className="text-xs font-bold text-white">
-                      {placements[hoveredIndex].translated_value || placements[hoveredIndex].text}
-                    </p>
-                    <p className="text-[11px] text-emerald-200 mt-1 font-mono">
-                      Location: Original Document Field
-                    </p>
-                  </div>
-                )}
               </div>
 
-              {/* Extracted English Fields Table */}
+              {/* Translated Details Table */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <h5 className="font-semibold text-gray-700 text-xs uppercase tracking-wider">
-                    Extracted English Fields
+                    TRANSLATED DETAILS
                   </h5>
-                  <span className="text-[11px] text-indigo-600 font-medium">Hover row to highlight field overlay</span>
                 </div>
                 <div className="bg-gray-50 rounded-xl border border-gray-100 overflow-hidden max-h-44 overflow-y-auto">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-indigo-900 text-white font-semibold">
                       <tr>
-                        <th className="px-4 py-2">Field Name</th>
-                        <th className="px-4 py-2">English Translation</th>
-                        <th className="px-4 py-2 text-right">Field Status</th>
+                        <th className="px-4 py-2">Field</th>
+                        <th className="px-4 py-2">Translation</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200/60">
                       {Object.entries(translatedData).map(([key, val], idx) => {
-                        const placement = placements[idx];
-                        const isHovered = hoveredIndex === idx;
                         return (
                           <tr
                             key={idx}
-                            onMouseEnter={() => setHoveredIndex(idx)}
-                            onMouseLeave={() => setHoveredIndex(null)}
-                            className={`transition-colors ${
-                              isHovered
-                                ? "bg-emerald-100/80 font-medium text-emerald-950"
-                                : idx % 2 === 0
-                                ? "bg-white"
-                                : "bg-gray-50/50"
-                            }`}
+                            className={idx % 2 === 0 ? "bg-white" : "bg-gray-50/50"}
                           >
                             <td className="px-4 py-2 font-semibold text-gray-800 border-r border-gray-100">{key}</td>
                             <td className="px-4 py-2 text-gray-700">
                               {typeof val === "object" ? JSON.stringify(val) : String(val)}
-                            </td>
-                            <td className="px-4 py-2 text-right">
-                              <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-200">
-                                MAPPED FIELD
-                              </span>
                             </td>
                           </tr>
                         );
@@ -406,7 +366,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
               ) : (
                 <>
                   <Sparkles className="w-4 h-4" />
-                  <span>Translate ID Document</span>
+                  <span>{selectedFile ? "Translate document" : "Translate"}</span>
                 </>
               )}
             </button>

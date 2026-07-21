@@ -656,7 +656,7 @@ export default function Home() {
               style={{ color: COLORS.purple }}
             >
               <Globe className="h-4 w-4" style={{ color: COLORS.purple }} />
-              Foreign ID Translator
+              Document Translator
             </button>
           </nav>
         </div>
@@ -823,7 +823,7 @@ export default function Home() {
                     className="inline-flex items-center gap-2 rounded-full bg-indigo-900/90 text-white px-5 py-2.5 text-[13px] font-semibold shadow-md transition hover:bg-indigo-950 border border-white/20"
                   >
                     <Globe className="h-4 w-4 text-purple-300" />
-                    Translate Foreign ID
+                    Document Translator
                   </button>
                   <button
                     type="button"

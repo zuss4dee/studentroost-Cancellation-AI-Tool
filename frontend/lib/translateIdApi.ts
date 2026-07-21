@@ -40,9 +40,7 @@ function isNetworkError(error: unknown): boolean {
 }
 
 /**
- * Uploads a foreign ID document and returns the translated overlay image (primary output),
- * original image, extracted English JSON fields, and placement logs.
- * Employs AbortController timeout to prevent infinite loading.
+ * Uploads an identity document and returns the translated document.
  */
 export async function translateForeignIdJson(
   file: File,
@@ -52,7 +50,7 @@ export async function translateForeignIdJson(
 
   for (let attempt = 1; attempt <= TRANSLATE_MAX_ATTEMPTS; attempt++) {
     if (attempt > 1) {
-      onStatusUpdate?.(`Analysis server is waking up... Attempt ${attempt} of ${TRANSLATE_MAX_ATTEMPTS}`);
+      onStatusUpdate?.("Translating…");
       await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
     }
 
@@ -63,7 +61,7 @@ export async function translateForeignIdJson(
     const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
     try {
-      onStatusUpdate?.("Detecting foreign text regions & generating English overlay image...");
+      onStatusUpdate?.("Translating…");
       const res = await fetch(`${getApiBase()}/api/translate-foreign-id-json`, {
         method: "POST",
         body: form,
@@ -73,17 +71,15 @@ export async function translateForeignIdJson(
       clearTimeout(timeoutId);
 
       if (!res.ok) {
-        const errorJson = await res.json().catch(() => ({}));
-        const message = errorJson.detail || `Server returned error status ${res.status}`;
-        throw new Error(message);
+        throw new Error("Translation could not be completed.");
       }
 
-      onStatusUpdate?.("Finalizing translated ID document overlay...");
+      onStatusUpdate?.("Translating…");
       return (await res.json()) as TranslateIdJsonResponse;
     } catch (error: any) {
       clearTimeout(timeoutId);
       if (error?.name === "AbortError") {
-        lastError = new Error("Request timed out. The server took too long to respond. Please try again.");
+        lastError = new Error("This file could not be translated. Please try another image or PDF.");
       } else {
         lastError = error;
       }
@@ -92,9 +88,7 @@ export async function translateForeignIdJson(
   }
 
   if (isNetworkError(lastError)) {
-    throw new Error(
-      "Could not reach the analysis server. If using Render, it may take ~1 minute to wake up. Please try again."
-    );
+    throw new Error("This file could not be translated. Please try another image or PDF.");
   }
-  throw lastError instanceof Error ? lastError : new Error("Translation request failed.");
+  throw lastError instanceof Error ? lastError : new Error("Translation could not be completed.");
 }

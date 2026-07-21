@@ -26,8 +26,7 @@ function isNetworkError(error: unknown): boolean {
 }
 
 /**
- * Uploads a foreign ID document to backend, detects foreign text regions & 2D bounding boxes,
- * translates text to English, and returns the annotated image base64 + JSON regions.
+ * Uploads an identity document to backend and returns the translated document.
  */
 export async function generateTranslatedIdOverlay(
   file: File,
@@ -37,7 +36,7 @@ export async function generateTranslatedIdOverlay(
 
   for (let attempt = 1; attempt <= OVERLAY_MAX_ATTEMPTS; attempt++) {
     if (attempt > 1) {
-      onStatusUpdate?.(`Analysis server is waking up... Attempt ${attempt} of ${OVERLAY_MAX_ATTEMPTS}`);
+      onStatusUpdate?.("Translating…");
       await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
     }
 
@@ -45,19 +44,17 @@ export async function generateTranslatedIdOverlay(
     form.append("file", file);
 
     try {
-      onStatusUpdate?.("Detecting text regions and 2D bounding boxes with Gemini Vision...");
+      onStatusUpdate?.("Translating…");
       const res = await fetch(`${getApiBase()}/api/translated-id-overlay`, {
         method: "POST",
         body: form,
       });
 
       if (!res.ok) {
-        const errorJson = await res.json().catch(() => ({}));
-        const message = errorJson.detail || `Server returned error status ${res.status}`;
-        throw new Error(message);
+        throw new Error("Translation could not be completed.");
       }
 
-      onStatusUpdate?.("Rendering English text overlay on ID document...");
+      onStatusUpdate?.("Translating…");
       return (await res.json()) as OverlayResponse;
     } catch (error) {
       lastError = error;
@@ -66,9 +63,7 @@ export async function generateTranslatedIdOverlay(
   }
 
   if (isNetworkError(lastError)) {
-    throw new Error(
-      "Could not reach the analysis server. If using Render, it may take ~1 minute to wake up. Please try again."
-    );
+    throw new Error("This file could not be translated. Please try another image or PDF.");
   }
-  throw lastError instanceof Error ? lastError : new Error("ID Overlay processing failed.");
+  throw lastError instanceof Error ? lastError : new Error("Translation could not be completed.");
 }
