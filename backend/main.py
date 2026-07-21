@@ -597,7 +597,7 @@ async def translate_foreign_id_json_endpoint(
                 detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)}MB.",
             )
 
-        # 1. Generate primary output: Translated ID Overlay Image & Extracted Regions
+        # 1. Single-pass OCR, Bounding Box Extraction & Translation
         try:
             overlay_res = await run_in_threadpool(process_translated_id_overlay, file_bytes, file.filename)
         except MissingApiKeyError as err:
@@ -613,15 +613,24 @@ async def translate_foreign_id_json_endpoint(
         except ValueError as val_err:
             raise HTTPException(status_code=400, detail=str(val_err))
 
-        # 2. Extract key-value JSON summary
-        try:
-            translated_data = await run_in_threadpool(translate_foreign_id, file_bytes, file.filename)
-        except Exception as exc:
-            logging.warning("Secondary JSON translation fallback: %s", exc)
-            translated_data = {
-                reg.get("original_text", f"Field_{i}"): reg.get("translated_text", "")
-                for i, reg in enumerate(overlay_res.get("extracted_regions", []), 1)
-            }
+        # 2. Extract key-value JSON summary directly from overlay regions (0 additional latency)
+        translated_data: Dict[str, Any] = {}
+        for reg in overlay_res.get("extracted_regions", []):
+            orig = str(reg.get("original_text") or "").strip()
+            trans = str(reg.get("translated_text") or "").strip()
+            if trans:
+                if ":" in trans:
+                    parts = trans.split(":", 1)
+                    k = parts[0].strip()
+                    v = parts[1].strip()
+                    translated_data[k] = v
+                elif orig:
+                    translated_data[orig] = trans
+                else:
+                    translated_data[f"Field_{len(translated_data) + 1}"] = trans
+
+        if not translated_data:
+            translated_data = {"Status": "Text extracted and annotated on ID image."}
 
         # 3. Generate optional ReportLab PDF summary
         pdf_b64 = ""
@@ -636,7 +645,10 @@ async def translate_foreign_id_json_endpoint(
             "filename": file.filename,
             "annotated_image_base64": overlay_res.get("annotated_image_base64"),
             "raw_image_base64": overlay_res.get("raw_image_base64"),
+            "original_image_base64": overlay_res.get("original_image_base64"),
             "translated_data": translated_data,
+            "extracted_regions": overlay_res.get("extracted_regions", []),
+            "placements": overlay_res.get("placements", []),
             "pdf_base64": pdf_b64,
         }
     except HTTPException:

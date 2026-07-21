@@ -2,7 +2,7 @@ import { getApiBase } from "./analyzeApi";
 
 export interface PlacementItem {
   index: number;
-  mode: "inline" | "side_panel";
+  mode: string;
   font_size: number;
   bbox: [number, number, number, number];
   text: string;
@@ -24,10 +24,11 @@ export interface TranslateIdJsonResponse {
 
 const TRANSLATE_MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 15_000;
+const FETCH_TIMEOUT_MS = 45_000;
 
 function isNetworkError(error: unknown): boolean {
   if (error instanceof TypeError) return true;
-  if (error instanceof Error && /failed to fetch|networkerror|load failed|timeout/i.test(error.message)) {
+  if (error instanceof Error && /failed to fetch|networkerror|load failed|timeout|aborted/i.test(error.message)) {
     return true;
   }
   return false;
@@ -36,6 +37,7 @@ function isNetworkError(error: unknown): boolean {
 /**
  * Uploads a foreign ID document and returns the translated overlay image (primary output),
  * original image, extracted English JSON fields, and placement logs.
+ * Employs AbortController timeout to prevent infinite loading.
  */
 export async function translateForeignIdJson(
   file: File,
@@ -52,12 +54,18 @@ export async function translateForeignIdJson(
     const form = new FormData();
     form.append("file", file);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
     try {
       onStatusUpdate?.("Detecting foreign text regions & generating English overlay image...");
       const res = await fetch(`${getApiBase()}/api/translate-foreign-id-json`, {
         method: "POST",
         body: form,
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!res.ok) {
         const errorJson = await res.json().catch(() => ({}));
@@ -67,8 +75,13 @@ export async function translateForeignIdJson(
 
       onStatusUpdate?.("Finalizing translated ID document overlay...");
       return (await res.json()) as TranslateIdJsonResponse;
-    } catch (error) {
-      lastError = error;
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      if (error?.name === "AbortError") {
+        lastError = new Error("Request timed out. The server took too long to respond. Please try again.");
+      } else {
+        lastError = error;
+      }
       if (!isNetworkError(error) || attempt === TRANSLATE_MAX_ATTEMPTS) break;
     }
   }
