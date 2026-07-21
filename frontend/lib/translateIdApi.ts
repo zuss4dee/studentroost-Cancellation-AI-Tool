@@ -1,11 +1,16 @@
 import { getApiBase } from "./analyzeApi";
 
 export interface PlacementItem {
-  index: number;
-  mode: string;
-  font_size: number;
-  bbox: [number, number, number, number];
-  text: string;
+  field_key?: string;
+  label?: string;
+  translated_value?: string;
+  source_bbox?: [number, number, number, number];
+  label_bbox?: [number, number, number, number];
+  value_bbox?: [number, number, number, number];
+  confidence?: number;
+  text?: string;
+  mode?: string;
+  font_size?: number;
 }
 
 export interface TranslateIdJsonResponse {

@@ -155,7 +155,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
             <div>
               <h3 className="font-bold text-lg text-white leading-tight">Foreign ID Translator</h3>
               <p className="text-xs text-indigo-200 mt-0.5">
-                Clean On-Card English Subtitles (No Clutter, No Markers, No Lines)
+                Translated Copy Layout — Field Labels & Translucent Highlight Tags
               </p>
             </div>
           </div>
@@ -221,7 +221,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                   <div>
                     <p className="font-semibold text-gray-800 text-base">{selectedFile.name}</p>
                     <p className="text-xs text-gray-500 mt-1">
-                      {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready for Subtitle Translation Overlay
+                      {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB • Ready for Translated Copy Generation
                     </p>
                     <button
                       type="button"
@@ -240,7 +240,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                       Click to upload or drag & drop Foreign ID
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
-                      Clean line-by-line English subtitles directly above source text lines.
+                      Generates a clean translated copy with English field tags directly on the ID document.
                     </p>
                   </div>
                 )}
@@ -266,7 +266,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                     }`}
                   >
                     {showOverlay ? <Eye className="w-3.5 h-3.5 text-indigo-600" /> : <EyeOff className="w-3.5 h-3.5 text-gray-500" />}
-                    <span>{showOverlay ? "Show Overlays: ON" : "Original Card Only"}</span>
+                    <span>{showOverlay ? "Translated Copy: ON" : "Original Card Only"}</span>
                   </button>
                 </div>
 
@@ -295,20 +295,22 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={showOverlay && annotatedImageBase64 ? annotatedImageBase64 : (originalImageBase64 || annotatedImageBase64 || "")}
-                  alt="Translated Foreign ID Subtitle Overlay"
+                  alt="Translated Foreign ID Copy"
                   className="max-h-[350px] w-auto object-contain rounded-lg shadow-lg border border-slate-700"
                 />
 
                 {/* Floating Tooltip when hovering over a field row */}
                 {hoveredIndex !== null && placements[hoveredIndex] && (
-                  <div className="absolute top-6 left-6 z-20 bg-slate-950/90 text-white border border-indigo-500/50 rounded-xl p-3 shadow-2xl backdrop-blur-md max-w-sm animate-in fade-in duration-150">
-                    <div className="flex items-center gap-1.5 text-[11px] font-bold text-indigo-300 uppercase tracking-wider mb-1">
+                  <div className="absolute top-6 left-6 z-20 bg-slate-950/90 text-white border border-emerald-500/50 rounded-xl p-3 shadow-2xl backdrop-blur-md max-w-sm animate-in fade-in duration-150">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-300 uppercase tracking-wider mb-1">
                       <Info className="w-3.5 h-3.5" />
-                      Line #{placements[hoveredIndex].index} [{placements[hoveredIndex].mode.toUpperCase()}]
+                      Field: {placements[hoveredIndex].label || placements[hoveredIndex].field_key}
                     </div>
-                    <p className="text-xs font-bold text-white">{placements[hoveredIndex].text}</p>
-                    <p className="text-[11px] text-indigo-200 mt-1 font-mono">
-                      Font size: {placements[hoveredIndex].font_size}px • Direct Subtitle Alignment
+                    <p className="text-xs font-bold text-white">
+                      {placements[hoveredIndex].translated_value || placements[hoveredIndex].text}
+                    </p>
+                    <p className="text-[11px] text-emerald-200 mt-1 font-mono">
+                      Location: Original Document Field
                     </p>
                   </div>
                 )}
@@ -320,7 +322,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                   <h5 className="font-semibold text-gray-700 text-xs uppercase tracking-wider">
                     Extracted English Fields
                   </h5>
-                  <span className="text-[11px] text-indigo-600 font-medium">Hover row to highlight subtitle</span>
+                  <span className="text-[11px] text-indigo-600 font-medium">Hover row to highlight field overlay</span>
                 </div>
                 <div className="bg-gray-50 rounded-xl border border-gray-100 overflow-hidden max-h-44 overflow-y-auto">
                   <table className="w-full text-left text-xs">
@@ -328,7 +330,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                       <tr>
                         <th className="px-4 py-2">Field Name</th>
                         <th className="px-4 py-2">English Translation</th>
-                        <th className="px-4 py-2 text-right">Alignment</th>
+                        <th className="px-4 py-2 text-right">Field Status</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200/60">
@@ -342,7 +344,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                             onMouseLeave={() => setHoveredIndex(null)}
                             className={`transition-colors ${
                               isHovered
-                                ? "bg-indigo-100/80 font-medium text-indigo-950"
+                                ? "bg-emerald-100/80 font-medium text-emerald-950"
                                 : idx % 2 === 0
                                 ? "bg-white"
                                 : "bg-gray-50/50"
@@ -353,13 +355,9 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                               {typeof val === "object" ? JSON.stringify(val) : String(val)}
                             </td>
                             <td className="px-4 py-2 text-right">
-                              {placement ? (
-                                <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-900 border border-indigo-200">
-                                  {placement.mode.toUpperCase()} ({placement.font_size}px)
-                                </span>
-                              ) : (
-                                <span className="text-gray-400 text-[10px]">SUBTITLE</span>
-                              )}
+                              <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-900 border border-emerald-200">
+                                MAPPED FIELD
+                              </span>
                             </td>
                           </tr>
                         );
