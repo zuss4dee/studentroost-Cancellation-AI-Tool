@@ -92,7 +92,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
         setPlacements(result.placements);
       }
 
-      // Automatically trigger PNG download of two-column mapping canvas
+      // Automatically trigger PNG download
       if (result.annotated_image_base64) {
         const a = document.createElement("a");
         a.style.display = "none";
@@ -103,7 +103,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
         document.body.removeChild(a);
       }
 
-      setSuccessMessage("Foreign ID translated! Two-column mapped PNG image with English Translation Rail downloaded.");
+      setSuccessMessage("Foreign ID translated! Mapped PNG image with numbered labels and connector lines downloaded.");
     } catch (err: any) {
       setError(err.message || "Failed to translate foreign ID document.");
     } finally {
@@ -156,7 +156,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-4xl overflow-hidden flex flex-col max-h-[92vh]">
+      <div className="bg-white rounded-2xl shadow-2xl border border-gray-100 w-full max-w-3xl overflow-hidden flex flex-col max-h-[92vh]">
         {/* Modal Header */}
         <div className="px-6 py-5 bg-gradient-to-r from-indigo-900 via-purple-900 to-indigo-800 text-white flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -166,7 +166,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
             <div>
               <h3 className="font-bold text-lg text-white leading-tight">Foreign ID Translator</h3>
               <p className="text-xs text-indigo-200 mt-0.5">
-                Numbered Source-to-Translation Mapping System & Two-Column English Translation Rail
+                On-Card Numbered English Labels & Short Connector Lines
               </p>
             </div>
           </div>
@@ -251,7 +251,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                       Click to upload or drag & drop Foreign ID
                     </p>
                     <p className="text-xs text-gray-400 mt-1">
-                      Numbered source markers + English Translation Rail. Preserves ID photo & document pixel-for-pixel.
+                      Numbered source markers + English translation labels directly on the ID card.
                     </p>
                   </div>
                 )}
@@ -264,7 +264,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                 <div className="flex items-center gap-3">
                   <h4 className="font-semibold text-gray-800 text-sm flex items-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                    Two-Column Document Translation Preview
+                    Translated Document Preview
                   </h4>
                   {/* Show Overlays Toggle Switch */}
                   <button
@@ -277,7 +277,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                     }`}
                   >
                     {showOverlay ? <Eye className="w-3.5 h-3.5 text-indigo-600" /> : <EyeOff className="w-3.5 h-3.5 text-gray-500" />}
-                    <span>{showOverlay ? "Translation Rail: ON" : "Original Card Only"}</span>
+                    <span>{showOverlay ? "Show Overlays: ON" : "Original Card Only"}</span>
                   </button>
                 </div>
 
@@ -301,13 +301,13 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                 </div>
               </div>
 
-              {/* Primary Image Output Preview (Two-Column Output Canvas) */}
-              <div className="relative bg-slate-900 rounded-2xl p-4 flex items-center justify-center overflow-hidden max-h-[420px] shadow-inner border border-slate-800">
+              {/* Primary Image Output Preview */}
+              <div className="relative bg-slate-900 rounded-2xl p-4 flex items-center justify-center overflow-hidden max-h-[380px] shadow-inner border border-slate-800">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
                   src={showOverlay && annotatedImageBase64 ? annotatedImageBase64 : (originalImageBase64 || annotatedImageBase64 || "")}
-                  alt="Translated Foreign ID Numbered Mapping Canvas"
-                  className="max-h-[390px] w-auto object-contain rounded-lg shadow-lg border border-slate-700"
+                  alt="Translated Foreign ID Overlay"
+                  className="max-h-[350px] w-auto object-contain rounded-lg shadow-lg border border-slate-700"
                 />
 
                 {/* Floating Tooltip when hovering over a field row */}
@@ -315,11 +315,11 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                   <div className="absolute top-6 left-6 z-20 bg-slate-950/90 text-white border border-purple-500/50 rounded-xl p-3 shadow-2xl backdrop-blur-md max-w-sm animate-in fade-in duration-150">
                     <div className="flex items-center gap-1.5 text-[11px] font-bold text-purple-300 uppercase tracking-wider mb-1">
                       <Info className="w-3.5 h-3.5" />
-                      Marker #{placements[hoveredIndex].index}
+                      Marker #{placements[hoveredIndex].index} [{placements[hoveredIndex].mode.toUpperCase()}]
                     </div>
                     <p className="text-xs font-bold text-white">{placements[hoveredIndex].text}</p>
                     <p className="text-[11px] text-purple-200 mt-1 font-mono">
-                      Mapped to source field on original ID card
+                      Connected to source field on original ID card
                     </p>
                   </div>
                 )}
@@ -329,18 +329,18 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <h5 className="font-semibold text-gray-700 text-xs uppercase tracking-wider">
-                    Extracted English Fields & Numbered Source Mappings
+                    Extracted English Fields & Direct Source Mappings
                   </h5>
                   <span className="text-[11px] text-purple-600 font-medium">Hover row to highlight marker #</span>
                 </div>
-                <div className="bg-gray-50 rounded-xl border border-gray-100 overflow-hidden max-h-48 overflow-y-auto">
+                <div className="bg-gray-50 rounded-xl border border-gray-100 overflow-hidden max-h-44 overflow-y-auto">
                   <table className="w-full text-left text-xs">
                     <thead className="bg-indigo-900 text-white font-semibold">
                       <tr>
                         <th className="px-4 py-2 text-center w-12">#</th>
                         <th className="px-4 py-2">Field Name</th>
                         <th className="px-4 py-2">English Translation</th>
-                        <th className="px-4 py-2 text-right">Mapping Marker</th>
+                        <th className="px-4 py-2 text-right">Placement Mode</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200/60">
@@ -370,9 +370,13 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
                               {typeof val === "object" ? JSON.stringify(val) : String(val)}
                             </td>
                             <td className="px-4 py-2 text-right">
-                              <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
-                                MARKER #{idx + 1}
-                              </span>
+                              {placement ? (
+                                <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-200">
+                                  {placement.mode.toUpperCase()} ({placement.font_size}px)
+                                </span>
+                              ) : (
+                                <span className="text-gray-400 text-[10px]">AUTO</span>
+                              )}
                             </td>
                           </tr>
                         );

@@ -49,10 +49,10 @@ def test_render_overlay_image():
         }
     ]
     annotated, count_drawn, placements = render_overlay_image(img, sample_boxes)
-    assert annotated.size[0] > 800  # Two-column output canvas is wider to fit Translation Rail
-    assert annotated.size[1] >= 600
+    assert annotated.size == (800, 600)  # Output canvas is original ID image
     assert count_drawn == 1
     assert len(placements) == 1
+
 
 
 

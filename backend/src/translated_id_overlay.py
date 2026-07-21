@@ -151,6 +151,21 @@ def resolve_box_coordinates(
     return (x1, y1, x2, y2)
 
 
+def detect_face_photo_region(img_w: int, img_h: int) -> Tuple[int, int, int, int]:
+    """
+    Returns the bounding box of the protected face photo region.
+    Typically occupies left 38% of card: [x1=0, y1=0.08*h, x2=0.38*w, y2=0.92*h].
+    """
+    return (0, int(0.08 * img_h), int(0.38 * img_w), int(0.92 * img_h))
+
+
+def boxes_overlap(b1: Tuple[int, int, int, int], b2: Tuple[int, int, int, int]) -> bool:
+    """Checks if bounding box b1 intersects bounding box b2."""
+    x1, y1, x2, y2 = b1
+    fx1, fy1, fx2, fy2 = b2
+    return not (x2 < fx1 or x1 > fx2 or y2 < fy1 or y1 > fy2)
+
+
 def generate_fallback_layout_boxes(
     translated_data: Dict[str, Any], img_w: int, img_h: int
 ) -> List[Dict[str, Any]]:
@@ -205,167 +220,260 @@ def wrap_text_to_lines(
     return lines
 
 
+def calculate_label_dimensions(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    max_allowed_w: int,
+    max_lines: int = 2,
+) -> Tuple[int, int, int, List[str], ImageFont.FreeTypeFont]:
+    """
+    Sizes font from 22px down to 15px minimum to fit within max_allowed_w.
+    Returns (label_w, label_h, font_size, wrapped_lines, font).
+    """
+    pad_x, pad_y = 8, 5
+
+    for font_size in range(22, 14, -1):
+        font = get_bold_font(font_size)
+        lines = wrap_text_to_lines(draw, text, font, max_allowed_w - (pad_x * 2))
+
+        if len(lines) <= max_lines:
+            max_line_w = 0
+            total_text_h = 0
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                lw = bbox[2] - bbox[0]
+                lh = bbox[3] - bbox[1]
+                max_line_w = max(max_line_w, lw)
+                total_text_h += lh + 3
+
+            label_w = max_line_w + (pad_x * 2)
+            label_h = total_text_h + (pad_y * 2)
+            return label_w, label_h, font_size, lines, font
+
+    font = get_bold_font(15)
+    lines = wrap_text_to_lines(draw, text, font, max_allowed_w - (pad_x * 2))[:max_lines]
+    max_line_w = 0
+    total_text_h = 0
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        lw = bbox[2] - bbox[0]
+        lh = bbox[3] - bbox[1]
+        max_line_w = max(max_line_w, lw)
+        total_text_h += lh + 3
+
+    label_w = max_line_w + (pad_x * 2)
+    label_h = total_text_h + (pad_y * 2)
+    return label_w, label_h, 15, lines, font
+
+
 def render_overlay_image(
     image: Image.Image, text_boxes: List[Dict[str, Any]]
 ) -> Tuple[Image.Image, int, List[Dict[str, Any]]]:
     """
-    Renders a two-column output canvas:
-    - Left Column: Untouched original ID card image with small numbered circular source markers (1, 2, 3...)
-      placed immediately beside original text boxes without covering photos or text.
-    - Right Column: Dedicated "English Translation" rail containing clean, stacked, numbered translation cards.
-    - Orthogonal Connector Lines: Connects each source marker to its matching rail translation card.
+    Renders compact English translation labels DIRECTLY ON the original ID card image:
+    1. Small circular numbered marker (1, 2, 3...) immediately beside original foreign text.
+    2. Matching numbered English translation label ("1. Name: Feng Xiangli", "2. Sex: Female") placed ON the card.
+    3. Short thin connector line (2px purple/navy 70% opacity) connecting source marker to label box.
+    4. Smart placement priority: ABOVE original text -> BESIDE original text -> BELOW original text.
+    5. Photo protection: ZERO labels or connector lines drawn over face photo.
 
-    Returns (canvas_png_image, count_drawn, placement_logs).
+    Returns (annotated_image, count_drawn, placement_logs).
     """
-    orig_w, orig_h = image.size
-    rail_w = max(380, int(orig_w * 0.42))
-    canvas_w = orig_w + rail_w + 40
-    canvas_h = max(orig_h, 780)
+    base = image.convert("RGBA") if image.mode != "RGBA" else image.copy()
+    overlay_layer = Image.new("RGBA", base.size, (255, 255, 255, 0))
+    draw_overlay = ImageDraw.Draw(overlay_layer)
 
-    # 1. Create two-column RGBA canvas
-    canvas = Image.new("RGBA", (canvas_w, canvas_h), (248, 250, 252, 255))
-    canvas.paste(image.convert("RGBA"), (0, 0))
+    img_w, img_h = base.size
+    photo_region = detect_face_photo_region(img_w, img_h)
 
-    overlay_layer = Image.new("RGBA", (canvas_w, canvas_h), (255, 255, 255, 0))
-    draw = ImageDraw.Draw(overlay_layer)
-
-    # Color definitions
-    PURPLE_MARKER = (76, 29, 149, 255)    # Dark Purple (#4C1D95)
+    # Color palette
+    PURPLE_MARKER = (76, 29, 149, 255)   # Dark Purple (#4C1D95)
     WHITE_TEXT = (255, 255, 255, 255)
-    NAVY_TEXT = (15, 23, 42, 255)        # Dark Navy (#0F172A)
-    RAIL_BG = (241, 245, 249, 255)       # Off-white container (#F1F5F9)
-    RAIL_BORDER = (203, 213, 225, 255)   # Slate border (#CBD5E1)
-    CARD_BG = (255, 255, 255, 255)       # Solid White Card
-    CARD_BORDER = (76, 29, 149, 255)     # Purple Card Border (#4C1D95)
-    LINE_COLOR = (109, 40, 217, 180)     # Purple Connector Line 70% opacity (#6D28D9)
+    BG_WHITE_85 = (255, 255, 255, 218)   # 85% opacity white background
+    BORDER_PURPLE = (76, 29, 149, 255)  # Purple border (#4C1D95)
+    TEXT_NAVY = (11, 31, 58, 255)       # Solid dark navy text (#0B1F3A)
+    LINE_PURPLE = (109, 40, 217, 180)   # 2px purple line 70% opacity (#6D28D9)
 
-    font_header = get_bold_font(16)
     font_marker = get_bold_font(12)
-    font_card_title = get_bold_font(15)
-    font_card_body = get_bold_font(14)
 
-    # 2. Draw Translation Rail Container on Right Side
-    rail_x1 = orig_w + 20
-    rail_y1 = 20
-    rail_x2 = canvas_w - 20
-    rail_y2 = canvas_h - 20
-
-    draw.rounded_rectangle(
-        [rail_x1, rail_y1, rail_x2, rail_y2],
-        radius=10,
-        fill=RAIL_BG,
-        outline=RAIL_BORDER,
-        width=2,
-    )
-
-    # Draw Rail Header Badge
-    draw.rounded_rectangle(
-        [rail_x1 + 15, rail_y1 + 15, rail_x2 - 15, rail_y1 + 50],
-        radius=6,
-        fill=PURPLE_MARKER,
-    )
-    draw.text((rail_x1 + 25, rail_y1 + 22), "ENGLISH TRANSLATION RAIL", fill=WHITE_TEXT, font=font_header)
-
-    card_y = rail_y1 + 65
     drawn_count = 0
     placements_log: List[Dict[str, Any]] = []
+    placed_label_bboxes: List[Tuple[int, int, int, int]] = []
+    side_panel_y = 60
 
     # Sort text boxes top-to-bottom according to y1 coordinate
     sorted_boxes = []
     for idx, item in enumerate(text_boxes):
         translated_text = str(item.get("translated_text") or item.get("translation") or "").strip()
-        coords = resolve_box_coordinates(item, orig_w, orig_h)
+        coords = resolve_box_coordinates(item, img_w, img_h)
         if translated_text and coords:
             sorted_boxes.append((coords[1], coords, translated_text, item))
 
     sorted_boxes.sort(key=lambda x: x[0])  # Sort by y1 coordinate
 
     for marker_num, (_, coords, translated_text, orig_item) in enumerate(sorted_boxes, 1):
-        x1, y1, x2, y2 = coords
-
-        # Format numbered English text e.g. "1. Name: Feng Xiangli"
+        ax1, ay1, ax2, ay2 = coords
         numbered_text = f"{marker_num}. {translated_text}"
 
-        # 3. Draw Circular Numbered Marker on Original ID Card (Left Column)
-        # Position marker immediately to the right of original text bounding box
-        marker_size = 18
-        mx1 = min(orig_w - marker_size - 4, x2 + 6)
-        my1 = max(4, y1)
+        # 1. Draw Circular Numbered Marker immediately beside original foreign text
+        marker_size = 16
+        mx1 = min(img_w - marker_size - 4, ax2 + 4)
+        my1 = max(4, ay1)
         mx2 = mx1 + marker_size
         my2 = my1 + marker_size
+        marker_center = ((mx1 + mx2) // 2, (my1 + my2) // 2)
 
-        draw.ellipse([mx1, my1, mx2, my2], fill=PURPLE_MARKER)
+        draw_overlay.ellipse([mx1, my1, mx2, my2], fill=PURPLE_MARKER)
 
-        # Draw centered white marker number
         num_str = str(marker_num)
-        nbox = draw.textbbox((0, 0), num_str, font=font_marker)
+        nbox = draw_overlay.textbbox((0, 0), num_str, font=font_marker)
         nw, nh = nbox[2] - nbox[0], nbox[3] - nbox[1]
-        draw.text((mx1 + (marker_size - nw) // 2, my1 + (marker_size - nh) // 2 - 1), num_str, fill=WHITE_TEXT, font=font_marker)
+        draw_overlay.text((mx1 + (marker_size - nw) // 2, my1 + (marker_size - nh) // 2 - 1), num_str, fill=WHITE_TEXT, font=font_marker)
 
-        # 4. Measure and Draw Translation Card in Right-hand Rail Column
-        card_w = (rail_x2 - rail_x1) - 30
-        card_x1 = rail_x1 + 15
-        card_x2 = card_x1 + card_w
+        # 2. Determine compact label dimensions (Max 35% image width)
+        max_allowed_w = min(int(img_w * 0.35), 320)
+        is_address = any(w in translated_text.lower() for w in ["address", "residence", "street", "road", "district"])
+        max_lines = 3 if is_address else 2
 
-        lines = wrap_text_to_lines(draw, numbered_text, font_card_body, card_w - 20)
-        card_h = max(42, len(lines) * 20 + 16)
-        card_y2 = card_y + card_h
+        label_w, label_h, font_size, lines, font = calculate_label_dimensions(
+            draw_overlay, numbered_text, max_allowed_w, max_lines
+        )
 
-        draw.rounded_rectangle(
-            [card_x1, card_y, card_x2, card_y2],
-            radius=6,
-            fill=CARD_BG,
-            outline=CARD_BORDER,
+        placement_mode = ""
+        lx1, ly1, lx2, ly2 = 0, 0, 0, 0
+
+        # --- PLACEMENT CHOICE A: ABOVE ORIGINAL TEXT ---
+        cand_y1 = ay1 - label_h - 6
+        cand_y2 = cand_y1 + label_h
+        cand_x1 = ax1
+        cand_x2 = cand_x1 + label_w
+        cand_box = (cand_x1, cand_y1, cand_x2, cand_y2)
+
+        if (
+            cand_y1 >= 5
+            and cand_x2 <= img_w - 5
+            and not boxes_overlap(cand_box, photo_region)
+            and not any(boxes_overlap(cand_box, prev) for prev in placed_label_bboxes)
+        ):
+            placement_mode = "above"
+            lx1, ly1, lx2, ly2 = cand_box
+
+        # --- PLACEMENT CHOICE B: BESIDE ORIGINAL TEXT ---
+        if not placement_mode:
+            cand_x1 = mx2 + 6
+            cand_x2 = cand_x1 + label_w
+            cand_y1 = ay1
+            cand_y2 = cand_y1 + label_h
+            cand_box = (cand_x1, cand_y1, cand_x2, cand_y2)
+
+            if (
+                cand_x2 <= img_w - 5
+                and cand_y2 <= img_h - 5
+                and not boxes_overlap(cand_box, photo_region)
+                and not any(boxes_overlap(cand_box, prev) for prev in placed_label_bboxes)
+            ):
+                placement_mode = "beside"
+                lx1, ly1, lx2, ly2 = cand_box
+
+        # --- PLACEMENT CHOICE C: BELOW ORIGINAL TEXT ---
+        if not placement_mode:
+            cand_y1 = ay2 + 6
+            cand_y2 = cand_y1 + label_h
+            cand_x1 = ax1
+            cand_x2 = cand_x1 + label_w
+            cand_box = (cand_x1, cand_y1, cand_x2, cand_y2)
+
+            if (
+                cand_y2 <= img_h - 5
+                and cand_x2 <= img_w - 5
+                and not boxes_overlap(cand_box, photo_region)
+                and not any(boxes_overlap(cand_box, prev) for prev in placed_label_bboxes)
+            ):
+                placement_mode = "below"
+                lx1, ly1, lx2, ly2 = cand_box
+
+        # --- PLACEMENT CHOICE D: SIDE_LABEL (OPEN MARGIN ON CARD) ---
+        if not placement_mode:
+            placement_mode = "side_label"
+            lx1 = max(10, img_w - label_w - 15)
+            ly1 = min(img_h - label_h - 10, side_panel_y)
+            lx2 = lx1 + label_w
+            ly2 = ly1 + label_h
+            side_panel_y = ly2 + 10
+
+        label_box = (lx1, ly1, lx2, ly2)
+        placed_label_bboxes.append(label_box)
+
+        # 3. Draw 2px Purple/Navy Short Connector Line from Marker to Label Box
+        label_center = ((lx1 + lx2) // 2, (ly1 + ly2) // 2)
+        connector_points = [marker_center, label_center]
+
+        # Draw orthogonal connector if line would pass over photo
+        if boxes_overlap((min(marker_center[0], label_center[0]), min(marker_center[1], label_center[1]), max(marker_center[0], label_center[0]), max(marker_center[1], label_center[1])), photo_region):
+            elbow_x = max(photo_region[2] + 10, min(marker_center[0], label_center[0]))
+            connector_points = [marker_center, (elbow_x, marker_center[1]), (elbow_x, label_center[1]), label_center]
+
+        draw_overlay.line(connector_points, fill=LINE_PURPLE, width=2)
+
+        # 4. Draw 85% Opacity White Rounded Box with 2px Dark Purple Border
+        draw_overlay.rounded_rectangle(
+            [lx1, ly1, lx2, ly2],
+            radius=4,
+            fill=BG_WHITE_85,
+            outline=BORDER_PURPLE,
             width=2,
         )
 
-        # Draw English translation lines inside card
-        line_y = card_y + 8
+        # 5. Draw Solid Dark Navy Bold English Text
+        text_y = ly1 + 5
         for line in lines:
-            draw.text((card_x1 + 10, line_y), line, fill=NAVY_TEXT, font=font_card_body)
-            line_y += 20
-
-        # 5. Draw Orthogonal Connector Line from Source Marker to Rail Card
-        mcx, mcy = (mx1 + mx2) // 2, (my1 + my2) // 2
-        card_target_y = card_y + (card_h // 2)
-        elbow_x = min(orig_w + 10, mcx + 25)
-
-        # Orthogonal elbow line: (mcx, mcy) -> (elbow_x, mcy) -> (elbow_x, card_target_y) -> (card_x1, card_target_y)
-        draw.line([(mcx, mcy), (elbow_x, mcy)], fill=LINE_COLOR, width=2)
-        draw.line([(elbow_x, mcy), (elbow_x, card_target_y)], fill=LINE_COLOR, width=2)
-        draw.line([(elbow_x, card_target_y), (card_x1, card_target_y)], fill=LINE_COLOR, width=2)
+            draw_overlay.text((lx1 + 8, text_y), line, fill=TEXT_NAVY, font=font)
+            bbox = draw_overlay.textbbox((0, 0), line, font=font)
+            text_y += (bbox[3] - bbox[1]) + 3
 
         drawn_count += 1
         placements_log.append({
             "index": marker_num,
-            "mode": "translation_rail",
-            "marker_pos": [mx1, my1, mx2, my2],
+            "mode": placement_mode,
+            "marker_num": marker_num,
+            "font_size": font_size,
+            "lines": len(lines),
             "orig_bbox": coords,
-            "rail_card_bbox": [card_x1, card_y, card_x2, card_y2],
+            "label_bbox": label_box,
+            "marker_center": marker_center,
+            "connector_points": connector_points,
             "text": numbered_text,
         })
 
-        logger.info(
-            f"[TRANSLATION_RAIL] Marker #{marker_num} | orig_bbox={coords} | marker_pos=({mx1},{my1}) | rail_card=({card_x1},{card_y}) | text='{numbered_text[:40]}'"
+        log_msg = (
+            f"[OVERLAY_RENDERER] Field: '{translated_text[:20]}' | Marker #{marker_num} | "
+            f"placement={placement_mode.upper()} | orig_bbox={coords} | label_bbox={label_box} | "
+            f"font_size={font_size}px | connector={connector_points}"
         )
+        logger.info(log_msg)
+        print(log_msg)
 
-        card_y = card_y2 + 12
+    # Composite overlay layer onto original ID image
+    final_image = Image.alpha_composite(base, overlay_layer).convert("RGB")
 
-    # Composite overlay layer onto two-column canvas
-    final_canvas = Image.alpha_composite(canvas, overlay_layer).convert("RGB")
-
-    msg_summary = f"[TRANSLATION_RAIL] Rendered two-column canvas: bbox_count={len(text_boxes)}, drawn_count={drawn_count}"
+    msg_summary = (
+        f"[OVERLAY_RENDERER] Completed ON-CARD overlay rendering: bbox_count={len(text_boxes)}, "
+        f"drawn_count={drawn_count}, above_count={sum(1 for p in placements_log if p['mode']=='above')}, "
+        f"beside_count={sum(1 for p in placements_log if p['mode']=='beside')}, "
+        f"below_count={sum(1 for p in placements_log if p['mode']=='below')}, "
+        f"side_label_count={sum(1 for p in placements_log if p['mode']=='side_label')}"
+    )
     logger.info(msg_summary)
     print(msg_summary)
 
-    return final_canvas, drawn_count, placements_log
+    return final_image, drawn_count, placements_log
 
 
 def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Performs OCR & bounding box extraction via Gemini Flash, translates text to English,
-    and overlays a two-column output canvas: Left column preserves original ID card pixel-for-pixel
-    with numbered circular markers; Right column presents structured English Translation Rail.
+    and overlays compact English translation labels DIRECTLY ON the original ID card image.
+    Uses numbered circular markers (1, 2, 3...) and short 70% opacity connector lines.
     """
     api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if not api_key or api_key.startswith("your-") or len(api_key) < 10:
@@ -466,7 +574,7 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
         except Exception as exc:
             logger.warning(f"[OVERLAY_PIPELINE] Translation fallback failed: {exc}")
 
-    # 5. Render PIL Overlay onto source image
+    # 5. Render PIL Overlay directly ON source image
     annotated_image, count_drawn, placements_log = render_overlay_image(source_image, text_boxes)
 
     # Save output as PNG with high fidelity
