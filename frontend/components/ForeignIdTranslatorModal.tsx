@@ -92,18 +92,7 @@ export function ForeignIdTranslatorModal({ isOpen, onClose }: ForeignIdTranslato
         setPlacements(result.placements);
       }
 
-      // Automatically trigger PNG download
-      if (result.annotated_image_base64) {
-        const a = document.createElement("a");
-        a.style.display = "none";
-        a.href = result.annotated_image_base64;
-        a.download = `Translated_${selectedFile.name.replace(/\.[^/.]+$/, "")}.png`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      }
-
-      setSuccessMessage("Foreign ID translated! Mapped PNG image with numbered labels and connector lines downloaded.");
+      setSuccessMessage("Foreign ID translated. Review the annotated image, then download if needed.");
     } catch (err: any) {
       setError(err.message || "Failed to translate foreign ID document.");
     } finally {

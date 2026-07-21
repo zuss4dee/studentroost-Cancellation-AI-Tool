@@ -29,16 +29,16 @@ logger = logging.getLogger(__name__)
 OVERLAY_PROMPT = (
     "You are an expert identity document OCR, bounding box detection, and translation system.\n"
     "Read the attached foreign ID document image (passport, ID card, or driver's license).\n"
-    "Locate every foreign text block, label, field, name, date, and document number on the document.\n"
-    "Group related text into sensible fields (e.g. Full Name, Sex, Date of Birth, Address, Document Number).\n"
-    "For each text field, extract:\n"
-    '1. "box_2d": [ymin, xmin, ymax, xmax] normalized from 0 to 1000 (where [0,0] is top-left and [1000,1000] is bottom-right).\n'
-    '2. "original_text": The foreign text read from that region.\n'
-    '3. "translated_text": The English translation of that field (e.g., "Name: Feng Xiangli", "Sex: Female", "Date of Birth: 24 April 1975").\n\n'
+    "Locate every visible printed line of text on the document.\n"
+    "Group text on the same visible row into a single line entry (e.g. Name row, Sex & Ethnicity row, Date of Birth row, Address row, Document Number row).\n"
+    "For each printed text line/row, extract:\n"
+    '1. "box_2d": [ymin, xmin, ymax, xmax] normalized from 0 to 1000 covering that entire printed row.\n'
+    '2. "original_text": The foreign text read across that entire line.\n'
+    '3. "translated_text": The English translation for that entire printed line (e.g. "Name: Feng Xiangli", "Sex: Female | Ethnicity: Han", "Date of Birth: 24 April 1975").\n\n'
     "STRICT REQUIREMENT: Return ONLY a valid JSON array of objects like this:\n"
     "[\n"
-    '  {"box_2d": [140, 280, 200, 780], "original_text": "NOM / SURNAME", "translated_text": "Name: DUPONT"},\n'
-    '  {"box_2d": [220, 280, 280, 780], "original_text": "PRENOM / GIVEN NAMES", "translated_text": "Given Names: JEAN"}\n'
+    '  {"box_2d": [140, 280, 200, 780], "original_text": "姓名 冯香丽", "translated_text": "Name: Feng Xiangli"},\n'
+    '  {"box_2d": [220, 280, 280, 780], "original_text": "性别 女 民族 汉", "translated_text": "Sex: Female | Ethnicity: Han"}\n'
     "]\n"
     "Do not include markdown code blocks or conversational text. Return ONLY raw JSON."
 )
@@ -151,6 +151,91 @@ def resolve_box_coordinates(
     return (x1, y1, x2, y2)
 
 
+def cluster_text_boxes_into_lines(
+    text_boxes: List[Dict[str, Any]], img_w: int, img_h: int
+) -> List[Dict[str, Any]]:
+    """
+    Groups OCR/Gemini text detections into their original visible printed horizontal rows/lines.
+    Prevents splitting one printed line (e.g. sex + ethnicity, or last name + first name) into multiple labels.
+    Reduces overlay label count from ~9 down to ~5 visible printed line overlays.
+    """
+    valid_items = []
+    for item in text_boxes:
+        coords = resolve_box_coordinates(item, img_w, img_h)
+        text = str(item.get("translated_text") or item.get("translation") or "").strip()
+        orig = str(item.get("original_text") or "").strip()
+        if coords and text:
+            x1, y1, x2, y2 = coords
+            cy = (y1 + y2) / 2.0
+            h = max(10, y2 - y1)
+            valid_items.append({
+                "coords": coords,
+                "cy": cy,
+                "h": h,
+                "original_text": orig,
+                "translated_text": text,
+                "item": item,
+            })
+
+    if not valid_items:
+        return text_boxes
+
+    # Sort items by vertical position y1
+    valid_items.sort(key=lambda item: item["coords"][1])
+
+    clusters: List[List[Dict[str, Any]]] = []
+    for item in valid_items:
+        placed = False
+        for cluster in clusters:
+            avg_cy = sum(b["cy"] for b in cluster) / len(cluster)
+            avg_h = sum(b["h"] for b in cluster) / len(cluster)
+            # Group if vertical centers are within 40% of average line height (~18-25px)
+            if abs(item["cy"] - avg_cy) <= max(18.0, avg_h * 0.40):
+                cluster.append(item)
+                placed = True
+                break
+        if not placed:
+            clusters.append([item])
+
+    clustered_regions: List[Dict[str, Any]] = []
+
+    for cluster in clusters:
+        # Sort items in line from left to right by x1
+        cluster.sort(key=lambda b: b["coords"][0])
+
+        line_x1 = min(b["coords"][0] for b in cluster)
+        line_y1 = min(b["coords"][1] for b in cluster)
+        line_x2 = max(b["coords"][2] for b in cluster)
+        line_y2 = max(b["coords"][3] for b in cluster)
+
+        orig_parts = [b["original_text"] for b in cluster if b["original_text"]]
+        trans_parts = [b["translated_text"] for b in cluster if b["translated_text"]]
+
+        combined_orig = " ".join(orig_parts) if orig_parts else ""
+
+        unique_trans = []
+        for t in trans_parts:
+            if t not in unique_trans:
+                unique_trans.append(t)
+
+        combined_trans = " | ".join(unique_trans)
+
+        clustered_regions.append({
+            "box_2d": [
+                int((line_y1 / float(img_h)) * 1000.0),
+                int((line_x1 / float(img_w)) * 1000.0),
+                int((line_y2 / float(img_h)) * 1000.0),
+                int((line_x2 / float(img_w)) * 1000.0),
+            ],
+            "original_text": combined_orig,
+            "translated_text": combined_trans,
+        })
+
+    logger.info(f"[LINE_CLUSTERING] Grouped {len(text_boxes)} fields into {len(clustered_regions)} visible printed rows/lines.")
+    print(f"[LINE_CLUSTERING] Grouped {len(text_boxes)} fields into {len(clustered_regions)} visible printed rows/lines.")
+    return clustered_regions
+
+
 def detect_face_photo_region(img_w: int, img_h: int) -> Tuple[int, int, int, int]:
     """
     Returns the bounding box of the protected face photo region.
@@ -230,7 +315,7 @@ def calculate_label_dimensions(
     Sizes font from 22px down to 15px minimum to fit within max_allowed_w.
     Returns (label_w, label_h, font_size, wrapped_lines, font).
     """
-    pad_x, pad_y = 8, 5
+    pad_x, pad_y = 6, 4
 
     for font_size in range(22, 14, -1):
         font = get_bold_font(font_size)
@@ -240,7 +325,7 @@ def calculate_label_dimensions(
             max_line_w = 0
             total_text_h = 0
             for line in lines:
-                bbox = draw.textbbox((0, 0), line, font=font)
+                bbox = draw.textbbox((0, 0), line, font=font, stroke_width=2)
                 lw = bbox[2] - bbox[0]
                 lh = bbox[3] - bbox[1]
                 max_line_w = max(max_line_w, lw)
@@ -255,7 +340,7 @@ def calculate_label_dimensions(
     max_line_w = 0
     total_text_h = 0
     for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font)
+        bbox = draw.textbbox((0, 0), line, font=font, stroke_width=2)
         lw = bbox[2] - bbox[0]
         lh = bbox[3] - bbox[1]
         max_line_w = max(max_line_w, lw)
@@ -270,27 +355,28 @@ def render_overlay_image(
     image: Image.Image, text_boxes: List[Dict[str, Any]]
 ) -> Tuple[Image.Image, int, List[Dict[str, Any]]]:
     """
-    Renders compact English translation labels DIRECTLY ON the original ID card image:
-    1. Small circular numbered marker (1, 2, 3...) immediately beside original foreign text.
-    2. Matching numbered English translation label ("1. Name: Feng Xiangli", "2. Sex: Female") placed ON the card.
-    3. Short thin connector line (2px purple/navy 70% opacity) connecting source marker to label box.
-    4. Smart placement priority: ABOVE original text -> BESIDE original text -> BELOW original text.
-    5. Photo protection: ZERO labels or connector lines drawn over face photo.
+    Renders line-level English translation labels DIRECTLY ON the original ID card image:
+    1. Line-level OCR Clustering: Groups OCR detections into ~5 visible printed rows/lines (no splitting).
+    2. Transparent Text Overlay with White Character Stroke: NO opaque white filled boxes covering real ID text.
+    3. Small circular numbered markers (1, 2, 3, 4, 5) placed beside original text line.
+    4. Short 70% opacity connector line linking marker to bold dark navy English text.
+    5. Photo Protection: ZERO text or connector lines drawn over face photo.
 
     Returns (annotated_image, count_drawn, placement_logs).
     """
+    img_w, img_h = image.size
+
+    # Step 1: Cluster field-level OCR boxes into ~5 visible printed rows/lines
+    clustered_lines = cluster_text_boxes_into_lines(text_boxes, img_w, img_h)
+
     base = image.convert("RGBA") if image.mode != "RGBA" else image.copy()
     overlay_layer = Image.new("RGBA", base.size, (255, 255, 255, 0))
     draw_overlay = ImageDraw.Draw(overlay_layer)
 
-    img_w, img_h = base.size
     photo_region = detect_face_photo_region(img_w, img_h)
 
-    # Color palette
     PURPLE_MARKER = (76, 29, 149, 255)   # Dark Purple (#4C1D95)
     WHITE_TEXT = (255, 255, 255, 255)
-    BG_WHITE_85 = (255, 255, 255, 218)   # 85% opacity white background
-    BORDER_PURPLE = (76, 29, 149, 255)  # Purple border (#4C1D95)
     TEXT_NAVY = (11, 31, 58, 255)       # Solid dark navy text (#0B1F3A)
     LINE_PURPLE = (109, 40, 217, 180)   # 2px purple line 70% opacity (#6D28D9)
 
@@ -301,21 +387,16 @@ def render_overlay_image(
     placed_label_bboxes: List[Tuple[int, int, int, int]] = []
     side_panel_y = 60
 
-    # Sort text boxes top-to-bottom according to y1 coordinate
-    sorted_boxes = []
-    for idx, item in enumerate(text_boxes):
-        translated_text = str(item.get("translated_text") or item.get("translation") or "").strip()
+    for marker_num, item in enumerate(clustered_lines, 1):
+        translated_text = str(item.get("translated_text") or "").strip()
         coords = resolve_box_coordinates(item, img_w, img_h)
-        if translated_text and coords:
-            sorted_boxes.append((coords[1], coords, translated_text, item))
+        if not translated_text or not coords:
+            continue
 
-    sorted_boxes.sort(key=lambda x: x[0])  # Sort by y1 coordinate
-
-    for marker_num, (_, coords, translated_text, orig_item) in enumerate(sorted_boxes, 1):
         ax1, ay1, ax2, ay2 = coords
         numbered_text = f"{marker_num}. {translated_text}"
 
-        # 1. Draw Circular Numbered Marker immediately beside original foreign text
+        # 1. Draw Circular Numbered Marker beside original foreign text line
         marker_size = 16
         mx1 = min(img_w - marker_size - 4, ax2 + 4)
         my1 = max(4, ay1)
@@ -342,8 +423,8 @@ def render_overlay_image(
         placement_mode = ""
         lx1, ly1, lx2, ly2 = 0, 0, 0, 0
 
-        # --- PLACEMENT CHOICE A: ABOVE ORIGINAL TEXT ---
-        cand_y1 = ay1 - label_h - 6
+        # --- PLACEMENT CHOICE A: ABOVE ORIGINAL TEXT LINE ---
+        cand_y1 = ay1 - label_h - 4
         cand_y2 = cand_y1 + label_h
         cand_x1 = ax1
         cand_x2 = cand_x1 + label_w
@@ -358,7 +439,7 @@ def render_overlay_image(
             placement_mode = "above"
             lx1, ly1, lx2, ly2 = cand_box
 
-        # --- PLACEMENT CHOICE B: BESIDE ORIGINAL TEXT ---
+        # --- PLACEMENT CHOICE B: BESIDE ORIGINAL TEXT LINE ---
         if not placement_mode:
             cand_x1 = mx2 + 6
             cand_x2 = cand_x1 + label_w
@@ -375,9 +456,9 @@ def render_overlay_image(
                 placement_mode = "beside"
                 lx1, ly1, lx2, ly2 = cand_box
 
-        # --- PLACEMENT CHOICE C: BELOW ORIGINAL TEXT ---
+        # --- PLACEMENT CHOICE C: BELOW ORIGINAL TEXT LINE ---
         if not placement_mode:
-            cand_y1 = ay2 + 6
+            cand_y1 = ay2 + 4
             cand_y2 = cand_y1 + label_h
             cand_x1 = ax1
             cand_x2 = cand_x1 + label_w
@@ -404,32 +485,30 @@ def render_overlay_image(
         label_box = (lx1, ly1, lx2, ly2)
         placed_label_bboxes.append(label_box)
 
-        # 3. Draw 2px Purple/Navy Short Connector Line from Marker to Label Box
+        # 3. Draw 1.5px Purple Connector Line from Marker to Label Box
         label_center = ((lx1 + lx2) // 2, (ly1 + ly2) // 2)
         connector_points = [marker_center, label_center]
 
-        # Draw orthogonal connector if line would pass over photo
         if boxes_overlap((min(marker_center[0], label_center[0]), min(marker_center[1], label_center[1]), max(marker_center[0], label_center[0]), max(marker_center[1], label_center[1])), photo_region):
             elbow_x = max(photo_region[2] + 10, min(marker_center[0], label_center[0]))
             connector_points = [marker_center, (elbow_x, marker_center[1]), (elbow_x, label_center[1]), label_center]
 
         draw_overlay.line(connector_points, fill=LINE_PURPLE, width=2)
 
-        # 4. Draw 85% Opacity White Rounded Box with 2px Dark Purple Border
-        draw_overlay.rounded_rectangle(
-            [lx1, ly1, lx2, ly2],
-            radius=4,
-            fill=BG_WHITE_85,
-            outline=BORDER_PURPLE,
-            width=2,
-        )
-
-        # 5. Draw Solid Dark Navy Bold English Text
-        text_y = ly1 + 5
+        # 4. Render Bold Dark Navy English Text DIRECTLY on Image with 2px White Character Stroke
+        # NO OPAQUE WHITE RECTANGLE BOX COVERING ORIGINAL TEXT!
+        text_y = ly1
         for line in lines:
-            draw_overlay.text((lx1 + 8, text_y), line, fill=TEXT_NAVY, font=font)
-            bbox = draw_overlay.textbbox((0, 0), line, font=font)
-            text_y += (bbox[3] - bbox[1]) + 3
+            draw_overlay.text(
+                (lx1, text_y),
+                line,
+                fill=TEXT_NAVY,
+                font=font,
+                stroke_width=2,
+                stroke_fill=WHITE_TEXT,
+            )
+            bbox = draw_overlay.textbbox((0, 0), line, font=font, stroke_width=2)
+            text_y += (bbox[3] - bbox[1]) + 2
 
         drawn_count += 1
         placements_log.append({
@@ -446,9 +525,9 @@ def render_overlay_image(
         })
 
         log_msg = (
-            f"[OVERLAY_RENDERER] Field: '{translated_text[:20]}' | Marker #{marker_num} | "
-            f"placement={placement_mode.upper()} | orig_bbox={coords} | label_bbox={label_box} | "
-            f"font_size={font_size}px | connector={connector_points}"
+            f"[OVERLAY_RENDERER] Line #{marker_num} | placement={placement_mode.upper()} | "
+            f"orig_bbox={coords} | label_bbox={label_box} | font_size={font_size}px | "
+            f"connector={connector_points} | text='{numbered_text[:40]}'"
         )
         logger.info(log_msg)
         print(log_msg)
@@ -457,8 +536,9 @@ def render_overlay_image(
     final_image = Image.alpha_composite(base, overlay_layer).convert("RGB")
 
     msg_summary = (
-        f"[OVERLAY_RENDERER] Completed ON-CARD overlay rendering: bbox_count={len(text_boxes)}, "
-        f"drawn_count={drawn_count}, above_count={sum(1 for p in placements_log if p['mode']=='above')}, "
+        f"[OVERLAY_RENDERER] Completed line-level overlay rendering: original_raw_boxes={len(text_boxes)}, "
+        f"line_clusters={len(clustered_lines)}, drawn_count={drawn_count}, "
+        f"above_count={sum(1 for p in placements_log if p['mode']=='above')}, "
         f"beside_count={sum(1 for p in placements_log if p['mode']=='beside')}, "
         f"below_count={sum(1 for p in placements_log if p['mode']=='below')}, "
         f"side_label_count={sum(1 for p in placements_log if p['mode']=='side_label')}"
@@ -472,8 +552,8 @@ def render_overlay_image(
 def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Performs OCR & bounding box extraction via Gemini Flash, translates text to English,
-    and overlays compact English translation labels DIRECTLY ON the original ID card image.
-    Uses numbered circular markers (1, 2, 3...) and short 70% opacity connector lines.
+    groups OCR detections into ~5 printed lines, and overlays transparent English translation text
+    with 2px white stroke DIRECTLY ON the original ID card image (no opaque white fill boxes).
     """
     api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if not api_key or api_key.startswith("your-") or len(api_key) < 10:
@@ -561,8 +641,7 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
 
     # 3. Parse JSON array of text regions
     text_boxes = parse_gemini_json_regions(response_text) if response_text else []
-    logger.info(f"[OVERLAY_PIPELINE] Extracted bbox_count: {len(text_boxes)}")
-    print(f"[OVERLAY_PIPELINE] Extracted bbox_count: {len(text_boxes)}")
+    logger.info(f"[OVERLAY_PIPELINE] Extracted raw bbox_count: {len(text_boxes)}")
 
     # 4. Fallback Generator if zero boxes parsed from direct prompt
     if not text_boxes:
