@@ -30,11 +30,11 @@ OVERLAY_PROMPT = (
     "You are an expert identity document OCR, bounding box detection, and translation system.\n"
     "Read the attached foreign ID document image (passport, ID card, or driver's license).\n"
     "Locate every visible printed line of text on the document.\n"
-    "Group text on the same visible row into a single line entry (e.g. Name row, Sex & Ethnicity row, Date of Birth row, Address row, Document Number row).\n"
+    "Group text on the same visible row into a single line entry (e.g. Name row, Sex & Ethnicity row, Date of Birth row, Address row 1, Address row 2, ID Number row).\n"
     "For each printed text line/row, extract:\n"
     '1. "box_2d": [ymin, xmin, ymax, xmax] normalized from 0 to 1000 covering that entire printed row.\n'
     '2. "original_text": The foreign text read across that entire line.\n'
-    '3. "translated_text": The English translation for that entire printed line (e.g. "Name: Feng Xiangli", "Sex: Female | Ethnicity: Han", "Date of Birth: 24 April 1975").\n\n'
+    '3. "translated_text": The clean English translation for that entire printed line (e.g. "Name: Feng Xiangli", "Sex: Female | Ethnicity: Han", "Date of birth: 24 April 1975", "ID number: 413001197504241527").\n\n'
     "STRICT REQUIREMENT: Return ONLY a valid JSON array of objects like this:\n"
     "[\n"
     '  {"box_2d": [140, 280, 200, 780], "original_text": "姓名 冯香丽", "translated_text": "Name: Feng Xiangli"},\n'
@@ -45,7 +45,7 @@ OVERLAY_PROMPT = (
 
 
 def get_bold_font(size: int) -> ImageFont.FreeTypeFont:
-    """Attempts to load a bold sans-serif TTF font at the given point size."""
+    """Attempts to load a bold sans-serif TTF font at the given point size (min 20px)."""
     font_paths = [
         "/System/Library/Fonts/Helvetica.ttc",
         "/System/Library/Fonts/SFNS.ttf",
@@ -156,8 +156,8 @@ def cluster_text_boxes_into_lines(
 ) -> List[Dict[str, Any]]:
     """
     Groups OCR/Gemini text detections into their original visible printed horizontal rows/lines.
-    Prevents splitting one printed line (e.g. sex + ethnicity, or last name + first name) into multiple labels.
-    Reduces overlay label count from ~9 down to ~5 visible printed line overlays.
+    Prevents splitting one printed line into multiple labels (e.g. Sex + Ethnicity on same line).
+    Produces approx 5-6 subtitle lines for standard foreign IDs.
     """
     valid_items = []
     for item in text_boxes:
@@ -189,7 +189,6 @@ def cluster_text_boxes_into_lines(
         for cluster in clusters:
             avg_cy = sum(b["cy"] for b in cluster) / len(cluster)
             avg_h = sum(b["h"] for b in cluster) / len(cluster)
-            # Group if vertical centers are within 40% of average line height (~18-25px)
             if abs(item["cy"] - avg_cy) <= max(18.0, avg_h * 0.40):
                 cluster.append(item)
                 placed = True
@@ -200,7 +199,6 @@ def cluster_text_boxes_into_lines(
     clustered_regions: List[Dict[str, Any]] = []
 
     for cluster in clusters:
-        # Sort items in line from left to right by x1
         cluster.sort(key=lambda b: b["coords"][0])
 
         line_x1 = min(b["coords"][0] for b in cluster)
@@ -215,8 +213,10 @@ def cluster_text_boxes_into_lines(
 
         unique_trans = []
         for t in trans_parts:
-            if t not in unique_trans:
-                unique_trans.append(t)
+            # Strip any legacy numbers if present
+            clean_t = re.sub(r"^\d+\.\s*", "", t).strip()
+            if clean_t and clean_t not in unique_trans:
+                unique_trans.append(clean_t)
 
         combined_trans = " | ".join(unique_trans)
 
@@ -231,15 +231,15 @@ def cluster_text_boxes_into_lines(
             "translated_text": combined_trans,
         })
 
-    logger.info(f"[LINE_CLUSTERING] Grouped {len(text_boxes)} fields into {len(clustered_regions)} visible printed rows/lines.")
-    print(f"[LINE_CLUSTERING] Grouped {len(text_boxes)} fields into {len(clustered_regions)} visible printed rows/lines.")
+    logger.info(f"[LINE_CLUSTERING] Clustered {len(text_boxes)} OCR items into {len(clustered_regions)} visible printed rows.")
+    print(f"[LINE_CLUSTERING] Clustered {len(text_boxes)} OCR items into {len(clustered_regions)} visible printed rows.")
     return clustered_regions
 
 
 def detect_face_photo_region(img_w: int, img_h: int) -> Tuple[int, int, int, int]:
     """
     Returns the bounding box of the protected face photo region.
-    Typically occupies left 38% of card: [x1=0, y1=0.08*h, x2=0.38*w, y2=0.92*h].
+    Occupies left 38% of card: [x1=0, y1=0.08*h, x2=0.38*w, y2=0.92*h].
     """
     return (0, int(0.08 * img_h), int(0.38 * img_w), int(0.92 * img_h))
 
@@ -292,7 +292,7 @@ def wrap_text_to_lines(
 
     for w in words[1:]:
         test = f"{cur} {w}"
-        bbox = draw.textbbox((0, 0), test, font=font)
+        bbox = draw.textbbox((0, 0), test, font=font, stroke_width=3)
         line_w = bbox[2] - bbox[0]
 
         if line_w <= max_w:
@@ -305,68 +305,65 @@ def wrap_text_to_lines(
     return lines
 
 
-def calculate_label_dimensions(
+def calculate_subtitle_dimensions(
     draw: ImageDraw.ImageDraw,
     text: str,
     max_allowed_w: int,
-    max_lines: int = 2,
 ) -> Tuple[int, int, int, List[str], ImageFont.FreeTypeFont]:
     """
-    Sizes font from 22px down to 15px minimum to fit within max_allowed_w.
+    Sizes subtitle font from 26px down to 20px minimum.
     Returns (label_w, label_h, font_size, wrapped_lines, font).
     """
-    pad_x, pad_y = 6, 4
-
-    for font_size in range(22, 14, -1):
+    for font_size in range(26, 19, -1):
         font = get_bold_font(font_size)
-        lines = wrap_text_to_lines(draw, text, font, max_allowed_w - (pad_x * 2))
+        lines = wrap_text_to_lines(draw, text, font, max_allowed_w)
 
-        if len(lines) <= max_lines:
+        if len(lines) <= 2:
             max_line_w = 0
             total_text_h = 0
             for line in lines:
-                bbox = draw.textbbox((0, 0), line, font=font, stroke_width=2)
+                bbox = draw.textbbox((0, 0), line, font=font, stroke_width=3)
                 lw = bbox[2] - bbox[0]
                 lh = bbox[3] - bbox[1]
                 max_line_w = max(max_line_w, lw)
-                total_text_h += lh + 3
+                total_text_h += lh + 4
 
-            label_w = max_line_w + (pad_x * 2)
-            label_h = total_text_h + (pad_y * 2)
+            label_w = max_line_w
+            label_h = total_text_h
             return label_w, label_h, font_size, lines, font
 
-    font = get_bold_font(15)
-    lines = wrap_text_to_lines(draw, text, font, max_allowed_w - (pad_x * 2))[:max_lines]
+    font = get_bold_font(20)
+    lines = wrap_text_to_lines(draw, text, font, max_allowed_w)[:2]
     max_line_w = 0
     total_text_h = 0
     for line in lines:
-        bbox = draw.textbbox((0, 0), line, font=font, stroke_width=2)
+        bbox = draw.textbbox((0, 0), line, font=font, stroke_width=3)
         lw = bbox[2] - bbox[0]
         lh = bbox[3] - bbox[1]
         max_line_w = max(max_line_w, lw)
-        total_text_h += lh + 3
+        total_text_h += lh + 4
 
-    label_w = max_line_w + (pad_x * 2)
-    label_h = total_text_h + (pad_y * 2)
-    return label_w, label_h, 15, lines, font
+    label_w = max_line_w
+    label_h = total_text_h
+    return label_w, label_h, 20, lines, font
 
 
 def render_overlay_image(
     image: Image.Image, text_boxes: List[Dict[str, Any]]
 ) -> Tuple[Image.Image, int, List[Dict[str, Any]]]:
     """
-    Renders line-level English translation labels DIRECTLY ON the original ID card image:
-    1. Line-level OCR Clustering: Groups OCR detections into ~5 visible printed rows/lines (no splitting).
-    2. Transparent Text Overlay with White Character Stroke: NO opaque white filled boxes covering real ID text.
-    3. Small circular numbered markers (1, 2, 3, 4, 5) placed beside original text line.
-    4. Short 70% opacity connector line linking marker to bold dark navy English text.
-    5. Photo Protection: ZERO text or connector lines drawn over face photo.
+    Renders clean, elegant ON-CARD TRANSLATION SUBTITLES directly on the original ID image:
+    - NO numbers, NO dots, NO connector/dashed lines, NO opaque white boxes, NO right-side rail.
+    - Large high-contrast Dark Navy text (#102A43) with a strong 3-4px solid white character stroke.
+    - Placed 8-14px directly ABOVE or BELOW each matching printed Chinese text line.
+    - Zero obstruction of portrait photo, document numbers, or security features.
+    - 5-6 subtitle overlays total matching visible document lines.
 
     Returns (annotated_image, count_drawn, placement_logs).
     """
     img_w, img_h = image.size
 
-    # Step 1: Cluster field-level OCR boxes into ~5 visible printed rows/lines
+    # Step 1: Cluster OCR text boxes into 5-6 visible printed rows
     clustered_lines = cluster_text_boxes_into_lines(text_boxes, img_w, img_h)
 
     base = image.convert("RGBA") if image.mode != "RGBA" else image.copy()
@@ -375,58 +372,44 @@ def render_overlay_image(
 
     photo_region = detect_face_photo_region(img_w, img_h)
 
-    PURPLE_MARKER = (76, 29, 149, 255)   # Dark Purple (#4C1D95)
-    WHITE_TEXT = (255, 255, 255, 255)
-    TEXT_NAVY = (11, 31, 58, 255)       # Solid dark navy text (#0B1F3A)
-    LINE_PURPLE = (109, 40, 217, 180)   # 2px purple line 70% opacity (#6D28D9)
-
-    font_marker = get_bold_font(12)
+    # Subtitle Palette
+    TEXT_NAVY = (16, 42, 67, 255)       # Dark Navy (#102A43)
+    WHITE_STROKE = (255, 255, 255, 255) # 3-4px Solid White Outline
+    WHITE_SHADOW = (255, 255, 255, 180) # Subtle Soft Shadow
 
     drawn_count = 0
     placements_log: List[Dict[str, Any]] = []
     placed_label_bboxes: List[Tuple[int, int, int, int]] = []
-    side_panel_y = 60
 
-    for marker_num, item in enumerate(clustered_lines, 1):
+    for idx, item in enumerate(clustered_lines, 1):
         translated_text = str(item.get("translated_text") or "").strip()
+        # Clean any accidental legacy numbers
+        clean_text = re.sub(r"^\d+\.\s*", "", translated_text).strip()
+
         coords = resolve_box_coordinates(item, img_w, img_h)
-        if not translated_text or not coords:
+        if not clean_text or not coords:
             continue
 
         ax1, ay1, ax2, ay2 = coords
-        numbered_text = f"{marker_num}. {translated_text}"
 
-        # 1. Draw Circular Numbered Marker beside original foreign text line
-        marker_size = 16
-        mx1 = min(img_w - marker_size - 4, ax2 + 4)
-        my1 = max(4, ay1)
-        mx2 = mx1 + marker_size
-        my2 = my1 + marker_size
-        marker_center = ((mx1 + mx2) // 2, (my1 + my2) // 2)
+        # Max width for subtitle: up to 55% of image width
+        max_allowed_w = int(img_w * 0.55)
 
-        draw_overlay.ellipse([mx1, my1, mx2, my2], fill=PURPLE_MARKER)
-
-        num_str = str(marker_num)
-        nbox = draw_overlay.textbbox((0, 0), num_str, font=font_marker)
-        nw, nh = nbox[2] - nbox[0], nbox[3] - nbox[1]
-        draw_overlay.text((mx1 + (marker_size - nw) // 2, my1 + (marker_size - nh) // 2 - 1), num_str, fill=WHITE_TEXT, font=font_marker)
-
-        # 2. Determine compact label dimensions (Max 35% image width)
-        max_allowed_w = min(int(img_w * 0.35), 320)
-        is_address = any(w in translated_text.lower() for w in ["address", "residence", "street", "road", "district"])
-        max_lines = 3 if is_address else 2
-
-        label_w, label_h, font_size, lines, font = calculate_label_dimensions(
-            draw_overlay, numbered_text, max_allowed_w, max_lines
+        label_w, label_h, font_size, lines, font = calculate_subtitle_dimensions(
+            draw_overlay, clean_text, max_allowed_w
         )
 
         placement_mode = ""
         lx1, ly1, lx2, ly2 = 0, 0, 0, 0
 
-        # --- PLACEMENT CHOICE A: ABOVE ORIGINAL TEXT LINE ---
-        cand_y1 = ay1 - label_h - 4
+        # Align left edge with Chinese line start ax1, avoiding photo region
+        target_x1 = max(ax1, photo_region[2] + 12) if ax1 < photo_region[2] + 20 else ax1
+        target_x1 = min(target_x1, img_w - label_w - 10)
+
+        # --- PLACEMENT CHOICE A: DIRECTLY ABOVE SOURCE LINE (8-14px) ---
+        cand_y1 = ay1 - label_h - 10
         cand_y2 = cand_y1 + label_h
-        cand_x1 = ax1
+        cand_x1 = target_x1
         cand_x2 = cand_x1 + label_w
         cand_box = (cand_x1, cand_y1, cand_x2, cand_y2)
 
@@ -439,28 +422,11 @@ def render_overlay_image(
             placement_mode = "above"
             lx1, ly1, lx2, ly2 = cand_box
 
-        # --- PLACEMENT CHOICE B: BESIDE ORIGINAL TEXT LINE ---
+        # --- PLACEMENT CHOICE B: DIRECTLY BELOW SOURCE LINE (8-14px) ---
         if not placement_mode:
-            cand_x1 = mx2 + 6
-            cand_x2 = cand_x1 + label_w
-            cand_y1 = ay1
+            cand_y1 = ay2 + 8
             cand_y2 = cand_y1 + label_h
-            cand_box = (cand_x1, cand_y1, cand_x2, cand_y2)
-
-            if (
-                cand_x2 <= img_w - 5
-                and cand_y2 <= img_h - 5
-                and not boxes_overlap(cand_box, photo_region)
-                and not any(boxes_overlap(cand_box, prev) for prev in placed_label_bboxes)
-            ):
-                placement_mode = "beside"
-                lx1, ly1, lx2, ly2 = cand_box
-
-        # --- PLACEMENT CHOICE C: BELOW ORIGINAL TEXT LINE ---
-        if not placement_mode:
-            cand_y1 = ay2 + 4
-            cand_y2 = cand_y1 + label_h
-            cand_x1 = ax1
+            cand_x1 = target_x1
             cand_x2 = cand_x1 + label_w
             cand_box = (cand_x1, cand_y1, cand_x2, cand_y2)
 
@@ -473,61 +439,60 @@ def render_overlay_image(
                 placement_mode = "below"
                 lx1, ly1, lx2, ly2 = cand_box
 
-        # --- PLACEMENT CHOICE D: SIDE_LABEL (OPEN MARGIN ON CARD) ---
+        # --- PLACEMENT CHOICE C: SHIFTED ABOVE OR RIGHT ---
         if not placement_mode:
-            placement_mode = "side_label"
-            lx1 = max(10, img_w - label_w - 15)
-            ly1 = min(img_h - label_h - 10, side_panel_y)
-            lx2 = lx1 + label_w
-            ly2 = ly1 + label_h
-            side_panel_y = ly2 + 10
+            placement_mode = "above_shifted"
+            cand_y1 = max(5, ay1 - label_h - 22)
+            cand_y2 = cand_y1 + label_h
+            cand_x1 = max(photo_region[2] + 12, target_x1)
+            cand_x2 = cand_x1 + label_w
+            lx1, ly1, lx2, ly2 = cand_x1, cand_y1, cand_x2, cand_y2
 
         label_box = (lx1, ly1, lx2, ly2)
         placed_label_bboxes.append(label_box)
 
-        # 3. Draw 1.5px Purple Connector Line from Marker to Label Box
-        label_center = ((lx1 + lx2) // 2, (ly1 + ly2) // 2)
-        connector_points = [marker_center, label_center]
-
-        if boxes_overlap((min(marker_center[0], label_center[0]), min(marker_center[1], label_center[1]), max(marker_center[0], label_center[0]), max(marker_center[1], label_center[1])), photo_region):
-            elbow_x = max(photo_region[2] + 10, min(marker_center[0], label_center[0]))
-            connector_points = [marker_center, (elbow_x, marker_center[1]), (elbow_x, label_center[1]), label_center]
-
-        draw_overlay.line(connector_points, fill=LINE_PURPLE, width=2)
-
-        # 4. Render Bold Dark Navy English Text DIRECTLY on Image with 2px White Character Stroke
-        # NO OPAQUE WHITE RECTANGLE BOX COVERING ORIGINAL TEXT!
+        # Render Clean Subtitle Text directly on Image
+        # 1. Subtle soft shadow (+2, +2)
+        # 2. Strong 3-4px solid white outline/stroke
+        # 3. Solid Dark Navy text (#102A43)
         text_y = ly1
         for line in lines:
+            # Soft shadow
+            draw_overlay.text(
+                (lx1 + 2, text_y + 2),
+                line,
+                fill=WHITE_SHADOW,
+                font=font,
+                stroke_width=4,
+                stroke_fill=WHITE_SHADOW,
+            )
+            # Solid navy text with white stroke
             draw_overlay.text(
                 (lx1, text_y),
                 line,
                 fill=TEXT_NAVY,
                 font=font,
-                stroke_width=2,
-                stroke_fill=WHITE_TEXT,
+                stroke_width=3,
+                stroke_fill=WHITE_STROKE,
             )
-            bbox = draw_overlay.textbbox((0, 0), line, font=font, stroke_width=2)
-            text_y += (bbox[3] - bbox[1]) + 2
+            bbox = draw_overlay.textbbox((0, 0), line, font=font, stroke_width=3)
+            text_y += (bbox[3] - bbox[1]) + 3
 
         drawn_count += 1
         placements_log.append({
-            "index": marker_num,
+            "index": idx,
             "mode": placement_mode,
-            "marker_num": marker_num,
             "font_size": font_size,
             "lines": len(lines),
             "orig_bbox": coords,
             "label_bbox": label_box,
-            "marker_center": marker_center,
-            "connector_points": connector_points,
-            "text": numbered_text,
+            "text": clean_text,
         })
 
         log_msg = (
-            f"[OVERLAY_RENDERER] Line #{marker_num} | placement={placement_mode.upper()} | "
-            f"orig_bbox={coords} | label_bbox={label_box} | font_size={font_size}px | "
-            f"connector={connector_points} | text='{numbered_text[:40]}'"
+            f"[SUBTITLE_RENDERER] Subtitle #{idx} | field='{clean_text[:25]}' | "
+            f"placement={placement_mode.upper()} | orig_bbox={coords} | label_bbox={label_box} | "
+            f"font_size={font_size}px"
         )
         logger.info(log_msg)
         print(log_msg)
@@ -536,12 +501,10 @@ def render_overlay_image(
     final_image = Image.alpha_composite(base, overlay_layer).convert("RGB")
 
     msg_summary = (
-        f"[OVERLAY_RENDERER] Completed line-level overlay rendering: original_raw_boxes={len(text_boxes)}, "
+        f"[SUBTITLE_RENDERER] Completed clean subtitle overlay rendering: original_raw_boxes={len(text_boxes)}, "
         f"line_clusters={len(clustered_lines)}, drawn_count={drawn_count}, "
-        f"above_count={sum(1 for p in placements_log if p['mode']=='above')}, "
-        f"beside_count={sum(1 for p in placements_log if p['mode']=='beside')}, "
-        f"below_count={sum(1 for p in placements_log if p['mode']=='below')}, "
-        f"side_label_count={sum(1 for p in placements_log if p['mode']=='side_label')}"
+        f"above_count={sum(1 for p in placements_log if 'above' in p['mode'])}, "
+        f"below_count={sum(1 for p in placements_log if p['mode']=='below')}"
     )
     logger.info(msg_summary)
     print(msg_summary)
@@ -552,8 +515,8 @@ def render_overlay_image(
 def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Performs OCR & bounding box extraction via Gemini Flash, translates text to English,
-    groups OCR detections into ~5 printed lines, and overlays transparent English translation text
-    with 2px white stroke DIRECTLY ON the original ID card image (no opaque white fill boxes).
+    groups OCR detections into ~5-6 printed lines, and overlays clean, elegant ON-CARD
+    TRANSLATION SUBTITLES directly on the original ID image (NO numbers, NO dots, NO lines, NO white boxes).
     """
     api_key = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
     if not api_key or api_key.startswith("your-") or len(api_key) < 10:
@@ -653,7 +616,7 @@ def process_translated_id_overlay(file_bytes: bytes, filename: str) -> Dict[str,
         except Exception as exc:
             logger.warning(f"[OVERLAY_PIPELINE] Translation fallback failed: {exc}")
 
-    # 5. Render PIL Overlay directly ON source image
+    # 5. Render Subtitle Overlay directly ON source image
     annotated_image, count_drawn, placements_log = render_overlay_image(source_image, text_boxes)
 
     # Save output as PNG with high fidelity
